@@ -1,0 +1,44 @@
+menu "Sendspin A2DP Bridge"
+
+    config APP_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config APP_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config APP_HOSTNAME
+        string "Hostname (mDNS)"
+        default "sendspin-bt-1"
+
+    config APP_FRIENDLY_NAME
+        string "Player name in Music Assistant / Bluetooth name of the ESP"
+        default "Sendspin BT 1"
+
+    config APP_BT_DEVICE_NAME
+        string "Bluetooth speaker to search for when none is paired yet"
+        default "SRS-XB100"
+
+    config APP_SENDSPIN_BUFFER_SIZE
+        int "Sendspin audio buffer (bytes); small keeps WiFi bursts short"
+        default 150000
+
+    config APP_STATIC_DELAY_MS
+        int "Initial static delay (ms), compensates the speaker latency"
+        default 250
+
+    config APP_INITIAL_VOLUME
+        int "Initial volume (%)"
+        range 0 100
+        default 50
+
+    config APP_TEST_TONE
+        bool "Diagnostic: play a 441 Hz tone while idle"
+        default n
+
+    config APP_SENDSPIN_DEBUG_LOG
+        bool "Diagnostic: debug log of the Sendspin library"
+        default n
+
+endmenu

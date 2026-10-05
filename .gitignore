@@ -1,0 +1,14 @@
+.venv/
+.esphome/
+secrets.yaml
+native/build/
+native/managed_components/
+native/sdkconfig
+native/sdkconfig.old
+native/sdkconfig.secrets
+native/dependencies.lock
+native/sdkconfig.test
+# Logs (enthalten SSID, IP- und MAC-Adressen)
+*.log
+testruns/
+__pycache__/

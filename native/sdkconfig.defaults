@@ -1,0 +1,80 @@
+# Sendspin -> A2DP bridge for ESP32 (WROVER). Values carry over the findings from the ESPHome PoC and the A/B runs
+# of the native firmware (see README).
+
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# PSRAM: large allocations go there, small ones and everything time-critical stay internal
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# WiFi/TCP buffers in PSRAM. Internal would halve the CPU load on ESP32 rev1 (PSRAM cache workaround), but then
+# internal RAM runs out and WiFi drops packets.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Core 0 for WiFi + Bluetooth stacks; app main (Sendspin client loop), pthreads (Sendspin) and TCP/IP on core 1
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+CONFIG_PTHREAD_DEFAULT_CORE_1=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+
+# Bluetooth Classic, A2DP source, BR/EDR only controller
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=y
+CONFIG_BT_A2DP_ENABLE=y
+CONFIG_BT_SSP_ENABLED=y
+CONFIG_BT_BLE_ENABLED=n
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
+CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# WiFi has to balance two needs on the shared radio (found in A/B runs):
+#  - Sendspin's clock sync needs the audio stream to arrive without backlog. Without receive aggregation (AMPDU)
+#    or with the default lwIP socket queue (6) the TCP stream backs up, the sync round trip grows to hundreds of
+#    ms and Sendspin discards all audio as late (silence).
+#  - Long WiFi bursts disturb A2DP (audible dropouts with ESPHome's high performance settings: BA window 32,
+#    16/64 buffers, 64 KB TCP window).
+# Receive aggregation in short bursts plus small buffers satisfies both.
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=40
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=8192
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+
+# Sendspin websocket server
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_LWIP_MAX_SOCKETS=12
+
+# Player role, plus the controller role for the speaker's buttons
+CONFIG_SENDSPIN_ENABLE_PLAYER=y
+CONFIG_SENDSPIN_ENABLE_CONTROLLER=y
+CONFIG_SENDSPIN_ENABLE_METADATA=n
+CONFIG_SENDSPIN_ENABLE_COLOR=n
+CONFIG_SENDSPIN_ENABLE_ARTWORK=n
+CONFIG_SENDSPIN_ENABLE_VISUALIZER=n
+# 150 KB: 64 KB already caused occasional underruns
+CONFIG_APP_SENDSPIN_BUFFER_SIZE=150000
+
+# Diagnostics: per-task CPU load in the stats log
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.5"
+  sendspin/sendspin-cpp: "0.7.2"
+  espressif/mdns: "*"

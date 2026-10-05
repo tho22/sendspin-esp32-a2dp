@@ -86,3 +86,7 @@ Lautstärke. Unterstützt die Box „Absolute Volume“ (z. B. SRS-XB100), regel
 änderungen werden in beide Richtungen mit Music Assistant abgeglichen; sonst regelt der ESP digital in 5-%-Schritten.
 
 Alle Messungen und Hörtests: [docs/TESTPROTOKOLL.md](docs/TESTPROTOKOLL.md)
+
+## Lizenz
+
+Apache License 2.0, siehe [LICENSE](LICENSE). Copyright 2026 tho22.

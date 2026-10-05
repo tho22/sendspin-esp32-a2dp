@@ -18,15 +18,20 @@ esp32:
   variant: esp32
   framework:
     type: esp-idf
-    # WLAN/Bluetooth-Koexistenz wie squeezelite-esp32: keine WLAN-Aggregation und kleine Puffer,
-    # damit WLAN-Bursts A2DP nicht die Sendezeit nehmen (überschreibt Sendspins High-Performance-Vorgaben)
+    # WLAN-Kompromiss aus den A/B-Tests der nativen Variante (siehe docs/TESTPROTOKOLL.md):
+    # Empfangs-Aggregation in kurzen Blöcken + kleine Puffer. Ohne Aggregation bzw. mit der lwIP-Standard-Mailbox (6)
+    # staut sich der TCP-Strom und Sendspins Zeitsynchronisierung bricht (nur Stille); mit Sendspins
+    # High-Performance-Vorgaben (BA 32, 16/64, 64 KB) stören lange WLAN-Bursts A2DP (Aussetzer).
     sdkconfig_options:
       CONFIG_ESP_WIFI_AMPDU_TX_ENABLED: n
-      CONFIG_ESP_WIFI_AMPDU_RX_ENABLED: n
+      CONFIG_ESP_WIFI_AMPDU_RX_ENABLED: y
+      CONFIG_ESP_WIFI_RX_BA_WIN: "6"
       CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM: "12"
       CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM: "40"
-      # kleines TCP-Fenster: Music Assistant kann nur in kleinen Portionen vorausschicken (glättet WLAN-Bursts)
-      CONFIG_LWIP_TCP_WND_DEFAULT: "16384"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "32768"
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "8192"
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
       # Core 0 für WLAN + Bluetooth freihalten (wie squeezelite-esp32): ESPHome-Hauptschleife und
       # Sendspin-Threads (Empfang, FLAC-Decoder) auf Core 1
       CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0: n
@@ -36,7 +41,7 @@ esp32:
       # TCP/IP-Stack ebenfalls auf Core 1 (Netzwerkverkehr nicht auf dem Funk-Core)
       CONFIG_LWIP_TCPIP_TASK_AFFINITY_NO_AFFINITY: n
       CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1: y
-      # DIAGNOSE (temporär): CPU-Last pro Task messen
+      # Diagnose: CPU-Last pro Task in der Log-Zeile "Load:"
       CONFIG_FREERTOS_USE_TRACE_FACILITY: y
       CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS: y
       CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID: y
@@ -59,7 +64,8 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  # WLAN/Bluetooth-Koexistenz braucht Modem-Sleep, sonst bekommt A2DP zu wenig Sendezeit
+  # Modem-Sleep außerhalb des Streamings; während des Streamings schaltet Sendspin ihn für eine genaue
+  # Zeitsynchronisierung ab ("High Performance")
   power_save_mode: light
 
 external_components:
@@ -77,8 +83,6 @@ speaker:
     # liegt im internen RAM (schneller Zugriff aus dem Bluetooth-Task), daher knapp halten
     buffer_duration: 200ms
     reconnect_interval: 15s
-    # DIAGNOSE (temporär): Testton statt Stille, wenn nichts abgespielt wird
-    test_tone: true
 
 sendspin:
   # Kein Task-Stack im PSRAM: auf ESP32 rev1 führt das zu Abstürzen im Sendspin-Puffer

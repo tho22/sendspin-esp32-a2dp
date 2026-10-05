@@ -10,10 +10,8 @@
 
 #include <esp_bt.h>
 #include <esp_bt_main.h>
-#include <esp_coexist.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
-#include <esp_wifi.h>
 #include <esp_timer.h>
 
 #include "esphome/core/hal.h"
@@ -320,16 +318,6 @@ void A2DPSourceSpeaker::loop() {
         }
       }
       break;
-    }
-  }
-
-  if (this->link_state_.load() == LinkState::CONNECTED) {
-    // WiFi/BT coexistence needs WiFi modem sleep to give A2DP enough airtime, but Sendspin requests high performance
-    // WiFi (no power save) while streaming. Without airtime the stack pulls audio slower than real time.
-    wifi_ps_type_t ps;
-    if (esp_wifi_get_ps(&ps) == ESP_OK && ps == WIFI_PS_NONE) {
-      ESP_LOGD(TAG, "Re-enabling WiFi modem sleep for Bluetooth coexistence");
-      esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     }
   }
 
@@ -777,17 +765,14 @@ void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_
       break;
     }
     case ESP_A2D_AUDIO_STATE_EVT:
-      // Tell the WiFi/BT coexistence arbiter that A2DP is streaming, so it grants Bluetooth more airtime
+      // No ESP_COEX_BT_ST_A2DP_STREAMING hint: it gives Bluetooth priority over WiFi, and the resulting WiFi latency
+      // ruins Sendspin's clock sync
       if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
         ESP_LOGD(TAG, "Media stream started");
         this->media_state_ = MediaState::STARTED;
-        esp_coex_status_bit_clear(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_PAUSED);
-        esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
       } else {
         ESP_LOGD(TAG, "Media stream suspended");
         this->media_state_ = MediaState::SUSPENDED;
-        esp_coex_status_bit_clear(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
-        esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_PAUSED);
       }
       break;
     case ESP_A2D_MEDIA_CTRL_ACK_EVT:

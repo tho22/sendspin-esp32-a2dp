@@ -81,7 +81,6 @@ Spitzenpegel (−90 dBFS = nur Stille) und internem RAM, dazu `Load:` mit der CP
 - Keine OTA-Updates in der nativen Variante (Flashen per USB).
 - Die ESPHome-Variante ist bisher nur kurz getestet (ca. 1,5 min Log nach Stream-Start, Hörtest ohne Aussetzer)
   und braucht auf Core 0 mehr CPU als die native Variante.
-- Nur die ESPHome-Variante erneuert eine abgelehnte Kopplung automatisch (siehe unten).
 
 ## Bedienung über die Box
 
@@ -92,7 +91,7 @@ In der ESPHome-Variante lösen die Tasten Trigger aus (`on_play_pause`, `on_next
 `on_volume`), die in `sendspin-bt-wrover.yaml` mit dem Media Player verbunden sind.
 
 Lehnt die Box die Verbindung ab, obwohl sie erreichbar ist (z. B. weil sie inzwischen mit der anderen Variante
-gekoppelt wurde), löscht die ESPHome-Variante nach 2 Versuchen die alte Kopplung und koppelt neu.
+gekoppelt wurde), löschen beide Varianten nach 2 Versuchen die alte Kopplung und koppeln neu.
 
 Alle Messungen und Hörtests: [docs/TESTPROTOKOLL.md](docs/TESTPROTOKOLL.md)
 
@@ -185,7 +184,6 @@ peak level (−90 dBFS = silence only) and internal RAM, plus `Load:` with the C
 - No OTA updates in the native variant (flash via USB).
 - The ESPHome variant has only been tested briefly (about 1.5 min of log after stream start, listening test without
   dropouts) and needs more CPU on core 0 than the native variant.
-- Only the ESPHome variant renews a rejected pairing automatically (see below).
 
 ## Speaker controls
 
@@ -196,7 +194,7 @@ In the ESPHome variant the buttons fire triggers (`on_play_pause`, `on_next`, `o
 `on_volume`) that `sendspin-bt-wrover.yaml` connects to the media player.
 
 If the speaker is reachable but refuses the connection (e.g. because it was paired with the other variant in the
-meantime), the ESPHome variant drops the old pairing after 2 attempts and pairs again.
+meantime), both variants drop the old pairing after 2 attempts and pair again.
 
 All measurements and listening tests (German): [docs/TESTPROTOKOLL.md](docs/TESTPROTOKOLL.md)
 

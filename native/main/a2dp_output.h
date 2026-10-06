@@ -109,6 +109,8 @@ class A2dpOutput {
   std::atomic<bool> streaming_{false};
   std::atomic<int32_t> q15_volume_{32767};
   std::atomic<uint32_t> failed_connects_{0};
+  std::atomic<uint32_t> rejected_connects_{0};  // The link came up but the speaker refused A2DP
+  std::atomic<bool> acl_up_{false};             // A baseband link to the speaker exists for the current attempt
 
   std::atomic<uint8_t> volume_percent_{100};
   std::atomic<bool> muted_{false};

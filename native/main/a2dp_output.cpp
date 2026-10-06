@@ -18,7 +18,8 @@ static const char *const TAG = "a2dp";
 
 static constexpr uint32_t MEDIA_CTRL_RETRY_MS = 1000;
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 30000;
-static constexpr uint32_t MAX_FAILED_CONNECTS = 4;  // Then restart the Bluetooth stack
+static constexpr uint32_t MAX_FAILED_CONNECTS = 4;    // Then restart the Bluetooth stack
+static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pairing and pair again
 static constexpr uint8_t DISCOVERY_DURATION = 10;   // x 1.28 s
 static constexpr uint32_t DISCARD_CHUNK_MS = 20;    // Granularity of real-time discarding while disconnected
 
@@ -254,6 +255,15 @@ void A2dpOutput::control_loop_() {
       if (!this->attempted_once_ || now - this->last_attempt_ms_ >= this->config_.reconnect_interval_ms) {
         this->attempted_once_ = true;
         this->last_attempt_ms_ = now;
+        if (this->rejected_connects_.load() >= MAX_REJECTED_CONNECTS) {
+          // The speaker answers but refuses the A2DP channel, typically because it no longer knows our link key
+          // (it was paired again with another firmware or device). Drop the stale pairing so the next connect pairs
+          // again.
+          ESP_LOGW(TAG, "Speaker rejects the connection, removing the stored pairing; if it does not pair again, "
+                        "put it into pairing mode");
+          esp_bt_gap_remove_bond_device(this->remote_address_);
+          this->rejected_connects_ = 0;
+        }
         if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
           this->restart_bluetooth_();
         }
@@ -316,6 +326,7 @@ void A2dpOutput::connect_() {
   format_bda(this->remote_address_, addr);
   ESP_LOGI(TAG, "Connecting to %s", addr);
   this->connect_started_ms_ = now_ms();
+  this->acl_up_ = false;
   this->link_state_ = LinkState::CONNECTING;
   if (esp_a2d_source_connect(this->remote_address_) != ESP_OK) {
     ESP_LOGW(TAG, "Connect failed");
@@ -849,6 +860,13 @@ void A2dpOutput::handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_pa
         this->discovery_stopped_ = true;
       }
       break;
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+      // Tells a speaker that is off (no link) apart from one that answers but refuses A2DP
+      if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
+          memcmp(param->acl_conn_cmpl_stat.bda, this->remote_address_, ESP_BD_ADDR_LEN) == 0) {
+        this->acl_up_ = true;
+      }
+      break;
     case ESP_BT_GAP_AUTH_CMPL_EVT:
       if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
         ESP_LOGI(TAG, "Paired with '%s'", param->auth_cmpl.device_name);
@@ -879,6 +897,7 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
       if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
         ESP_LOGI(TAG, "Connected to %s", addr);
         this->failed_connects_ = 0;
+        this->rejected_connects_ = 0;
         if (memcmp(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN) != 0) {
           memcpy(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
           this->address_dirty_ = true;
@@ -889,7 +908,11 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
       } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
         ESP_LOGW(TAG, "Disconnected from %s", addr);
         if (this->link_state_.load() == LinkState::CONNECTING) {
-          this->failed_connects_++;
+          if (this->acl_up_.load()) {
+            this->rejected_connects_++;
+          } else {
+            this->failed_connects_++;
+          }
         }
         this->media_state_ = MediaState::SUSPENDED;
         this->media_ctrl_pending_ = false;

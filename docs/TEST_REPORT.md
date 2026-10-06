@@ -114,7 +114,7 @@ play/pause/next/previous buttons and a "Re-pair speaker" button. Flash: 1.62 of 
 | Web interface reachable | HTTP 200 on port 80, runs alongside Sendspin's own HTTP server (separate control port) ✔ |
 | Status, track info, controls | ✔ (confirmed by the user) |
 | Playback with the metadata role enabled | log: 0 lost sync, 0 underruns, pull rate ≥ 44,015 Hz (1.8 min after settling); internal heap 58 KB free (min 55 KB) |
-| "Re-pair speaker" button | not exercised in this test |
+| "Re-pair speaker" button | 1st press (speaker not in pairing mode): pairing dropped, discovery finds nothing, retries every 15 s; 2nd press with pairing mode: speaker found after 0.5 s, paired and connected 3 s after the press ✔ |
 
 ## Quirks of the Sony SRS-XB100
 

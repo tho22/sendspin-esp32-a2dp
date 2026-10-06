@@ -195,6 +195,22 @@ revision 3 boards (no PSRAM cache workaround, more headroom on core 0).
 Pitfall found: `patch-idf-sbc-bitrate.sh --revert` restored the backup with its old timestamp, so builds kept the
 patched object file. The script now touches the file.
 
+## Phase 9: Bluetooth stream stall and watchdog (2026-10-06)
+
+ESPHome variant, 9 min of clean playback, then the music stopped (speaker on, nothing pressed):
+
+| Observation | Finding |
+|---|---|
+| Pull rate 44,206 Hz → 34,107 Hz → 0 Hz within ~20 s | the A2DP stack stopped calling the data callback |
+| No `Disconnected`, no `Media stream suspended` | the link stayed up from the ESP's point of view |
+| BTC_TASK 25 % → 1.4 %, Sendspin 31 % → 1.3 % | Bluetooth idle, Sendspin blocked on the full buffer and dropping every chunk (`Failed to send audio chunk`) |
+| WiFi, heap | fine; Music Assistant kept streaming |
+
+Cause unknown (speaker or Bluedroid). Fix in both variants: a stream watchdog. If the stream is started but no audio
+was pulled for 3 s, the ESP disconnects and reconnects right away; if the disconnect is not confirmed within 5 s,
+or a second stall follows within 5 min, it restarts the Bluetooth stack. Checked: no false triggers in normal
+operation; the recovery itself has not been observed yet (the stall could not be provoked).
+
 ## Quirks of the Sony SRS-XB100
 
 - Reports 250 ms latency via A2DP delay reporting (initial value for Sendspin's static delay).

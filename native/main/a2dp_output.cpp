@@ -20,6 +20,10 @@ static constexpr uint32_t MEDIA_CTRL_RETRY_MS = 1000;
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 30000;
 static constexpr uint32_t MAX_FAILED_CONNECTS = 4;    // Then restart the Bluetooth stack
 static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pairing and pair again
+// Stream watchdog: the stack once stopped pulling audio while the link stayed up (no disconnect, no suspend)
+static constexpr uint32_t STALL_TIMEOUT_MS = 3000;             // Started stream without a pull for this long
+static constexpr uint32_t STALL_DISCONNECT_TIMEOUT_MS = 5000;  // Disconnect not confirmed: restart the stack
+static constexpr uint32_t STALL_REPEAT_WINDOW_MS = 300000;     // Another stall within this window: restart the stack
 static constexpr uint8_t DISCOVERY_DURATION = 10;   // x 1.28 s
 static constexpr uint32_t DISCARD_CHUNK_MS = 20;    // Granularity of real-time discarding while disconnected
 
@@ -172,6 +176,14 @@ bool A2dpOutput::init_bluetooth_() {
   return true;
 }
 
+void A2dpOutput::recover_from_stall_(const char *reason) {
+  this->stall_disconnect_ms_ = 0;
+  this->restart_bluetooth_(reason);
+  // The restart drops the link without a disconnect event; reconnect right away
+  this->link_state_ = LinkState::IDLE;
+  this->attempted_once_ = false;
+}
+
 void A2dpOutput::restart_bluetooth_(const char *reason) {
   // Clears controller state that survives reconnects: a stale ACL link ("Conn Exists") or reduced throughput after
   // an inquiry
@@ -252,6 +264,11 @@ void A2dpOutput::control_loop_() {
 
   switch (this->link_state_.load()) {
     case LinkState::IDLE:
+      if (this->stall_disconnect_ms_ != 0) {
+        // Disconnected because the stream stalled: reconnect right away instead of after the reconnect interval
+        this->stall_disconnect_ms_ = 0;
+        this->attempted_once_ = false;
+      }
       if (!this->attempted_once_ || now - this->last_attempt_ms_ >= this->config_.reconnect_interval_ms) {
         this->attempted_once_ = true;
         this->last_attempt_ms_ = now;
@@ -306,7 +323,28 @@ void A2dpOutput::control_loop_() {
       }
       break;
     case LinkState::CONNECTED: {
+      if (this->stall_disconnect_ms_ != 0) {
+        if (now - this->stall_disconnect_ms_ >= STALL_DISCONNECT_TIMEOUT_MS) {
+          this->recover_from_stall_("Disconnect after a stalled stream not confirmed, restarting Bluetooth");
+        }
+        break;
+      }
       const MediaState media = this->media_state_.load();
+      // Signed: the BTC task may have updated last_pull_ms_ after `now` was taken
+      const auto since_pull = static_cast<int32_t>(now - this->last_pull_ms_.load());
+      if (media == MediaState::STARTED && since_pull >= static_cast<int32_t>(STALL_TIMEOUT_MS)) {
+        const bool repeated = this->last_stall_ms_ != 0 && now - this->last_stall_ms_ < STALL_REPEAT_WINDOW_MS;
+        this->last_stall_ms_ = now;
+        if (repeated) {
+          this->recover_from_stall_("Bluetooth stream stalled again, restarting Bluetooth");
+        } else {
+          ESP_LOGW(TAG, "Bluetooth stream stalled (no audio pulled for %d ms), reconnecting",
+                   static_cast<int>(since_pull));
+          this->stall_disconnect_ms_ = now;
+          esp_a2d_source_disconnect(this->remote_address_);
+        }
+        break;
+      }
       // With keep_alive the stream (silence while idle) runs for the whole connection: some sinks, e.g. the Sony
       // SRS-XB100, power off after a while when they receive no audio even though they stay connected
       const bool want_stream = this->config_.keep_alive || this->streaming_.load();
@@ -743,6 +781,7 @@ int32_t A2dpOutput::data_callback(uint8_t *data, int32_t len) {
   if (instance_ == nullptr || data == nullptr || len <= 0) {
     return 0;
   }
+  instance_->last_pull_ms_ = now_ms();
   const int64_t start = esp_timer_get_time();
   const int32_t result = instance_->fill_audio_(data, len);
   const auto elapsed = static_cast<uint32_t>(esp_timer_get_time() - start);
@@ -929,6 +968,7 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
       // ruined Sendspin's clock sync (3.5 ms round trip before streaming, hundreds of ms after)
       if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
         ESP_LOGI(TAG, "Media stream started");
+        this->last_pull_ms_ = now_ms();  // Grace period for the first pull
         this->media_state_ = MediaState::STARTED;
       } else {
         ESP_LOGI(TAG, "Media stream suspended");

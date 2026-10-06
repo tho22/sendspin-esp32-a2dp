@@ -78,6 +78,7 @@ class A2dpOutput {
 
   bool init_bluetooth_();
   void restart_bluetooth_(const char *reason);
+  void recover_from_stall_(const char *reason);
   void connect_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
   void control_loop_();
@@ -130,6 +131,9 @@ class A2dpOutput {
   uint32_t last_attempt_ms_{0};
   uint32_t connect_started_ms_{0};
   uint32_t last_media_ctrl_ms_{0};
+  std::atomic<uint32_t> last_pull_ms_{0};  // Last data callback (BTC task), for the stream watchdog
+  uint32_t stall_disconnect_ms_{0};          // Disconnect requested because of a stall, 0 = none
+  uint32_t last_stall_ms_{0};
 
   // Smoothed playback clock, only touched by the data callback (BTC task)
   int64_t clock_anchor_us_{0};

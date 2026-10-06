@@ -99,6 +99,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
 
   bool init_bluetooth_();
   void restart_bluetooth_(const char *reason);
+  void recover_from_stall_(const char *reason);
   void log_task_load_();
   void connect_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
@@ -180,6 +181,9 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   uint32_t connect_started_ms_{0};
   uint32_t last_media_ctrl_ms_{0};
   uint32_t last_underrun_log_ms_{0};
+  std::atomic<uint32_t> last_pull_ms_{0};  // Last data callback (BTC task), for the stream watchdog
+  uint32_t stall_disconnect_ms_{0};          // Disconnect requested because of a stall, 0 = none
+  uint32_t last_stall_ms_{0};
 };
 
 }  // namespace esphome::a2dp_source

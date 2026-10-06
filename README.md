@@ -103,6 +103,7 @@ slightly less than real time until the next reboot.
 | Steady playback clock instead of pull times | Sendspin hard-syncs at 5 ms error; the stack pulls audio in irregular bursts |
 | Keep alive (stream silence) | the SRS-XB100 powers off after a while without audio |
 | Outgoing Bluetooth connections only, timeout, stack restart after 4 failed attempts | prevents half-open links ("Conn Exists") |
+| Stream watchdog: no audio pulled for 3 s while the stream runs → reconnect; not confirmed within 5 s or again within 5 min → restart the Bluetooth stack | the stack once stopped pulling audio while the link stayed up (no disconnect, no suspend), playback hung until a reboot |
 | `api: reboot_timeout: 0s` (ESPHome) | ESPHome otherwise reboots every 15 min when no Home Assistant is connected |
 
 ## Diagnostics

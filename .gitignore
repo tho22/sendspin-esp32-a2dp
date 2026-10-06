@@ -8,7 +8,7 @@ native/sdkconfig.old
 native/sdkconfig.secrets
 native/dependencies.lock
 native/sdkconfig.test
-# Logs (enthalten SSID, IP- und MAC-Adressen)
+# Logs (contain SSID, IP and MAC addresses)
 *.log
 testruns/
 __pycache__/

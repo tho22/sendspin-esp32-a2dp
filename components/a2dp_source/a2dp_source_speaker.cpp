@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include <esp_bt.h>
@@ -105,7 +106,8 @@ void A2DPSourceSpeaker::setup() {
   this->address_pref_ = global_preferences->make_preference<esp_bd_addr_t>(fnv1_hash("a2dp_source_address"));
   if (!this->address_configured_) {
     esp_bd_addr_t saved;
-    if (this->address_pref_.load(&saved)) {
+    static const esp_bd_addr_t CLEARED = {0};
+    if (this->address_pref_.load(&saved) && memcmp(saved, CLEARED, ESP_BD_ADDR_LEN) != 0) {
       memcpy(this->remote_address_, saved, ESP_BD_ADDR_LEN);
       this->has_address_ = true;
     }
@@ -256,6 +258,7 @@ void A2DPSourceSpeaker::dump_config() {
 
 void A2DPSourceSpeaker::loop() {
   const uint32_t now = millis();
+  this->update_status_text_();
 
   if (this->address_dirty_.exchange(false)) {
     this->has_address_ = true;
@@ -473,6 +476,65 @@ void A2DPSourceSpeaker::log_task_load_() {
   prev_total = total;
   heap_caps_free(tasks);
 #endif
+}
+
+void A2DPSourceSpeaker::update_status_text_() {
+  char addr[18];
+  format_bda(this->remote_address_, addr);
+  std::string name;
+  {
+    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+    name = this->remote_name_;
+  }
+  const std::string peer = name.empty() ? std::string(addr) : name + " (" + addr + ")";
+  switch (this->link_state_.load()) {
+    case LinkState::CONNECTED:
+      this->status_text_ = "Connected to " + peer;
+      break;
+    case LinkState::CONNECTING:
+      this->status_text_ = "Connecting to " + peer;
+      break;
+    case LinkState::DISCOVERING:
+      this->status_text_ = "Searching for '" + this->device_name_ + "' (put the speaker into pairing mode)";
+      break;
+    case LinkState::IDLE:
+      this->status_text_ = this->has_address_ ? "Disconnected, paired with " + peer : "Not paired";
+      break;
+  }
+}
+
+void A2DPSourceSpeaker::repair() {
+  if (this->address_configured_) {
+    ESP_LOGW(TAG, "The speaker address is fixed in the configuration; only renewing the pairing");
+  }
+  char addr[18];
+  format_bda(this->remote_address_, addr);
+  ESP_LOGI(TAG, "Re-pairing: dropping the pairing with %s and searching for '%s'", addr, this->device_name_.c_str());
+  if (this->link_state_.load() == LinkState::CONNECTED) {
+    esp_a2d_source_disconnect(this->remote_address_);
+  }
+  if (this->link_state_.load() == LinkState::DISCOVERING) {
+    esp_bt_gap_cancel_discovery();
+  }
+  esp_bt_gap_remove_bond_device(this->remote_address_);
+  this->rejected_connects_ = 0;
+  this->failed_connects_ = 0;
+  {
+    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+    this->remote_name_.clear();
+  }
+  if (!this->address_configured_ && !this->device_name_.empty()) {
+    // Forget the address, so the next attempt discovers the speaker by name and pairs it
+    esp_bd_addr_t cleared = {0};
+    this->address_pref_.save(&cleared);
+    global_preferences->sync();
+    this->has_address_ = false;
+  }
+  // Start the next attempt right away; a disconnect still in progress moves the link to IDLE first
+  this->attempted_once_ = false;
+  if (this->link_state_.load() != LinkState::CONNECTED) {
+    this->link_state_ = LinkState::IDLE;
+  }
 }
 
 void A2DPSourceSpeaker::connect_() {
@@ -907,6 +969,12 @@ void A2DPSourceSpeaker::handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_ga
       esp_bt_gap_pin_reply(param->pin_req.bda, true, pin_len, pin_code);
       break;
     }
+    case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
+      if (param->read_rmt_name.stat == ESP_BT_STATUS_SUCCESS) {
+        std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+        this->remote_name_ = reinterpret_cast<const char *>(param->read_rmt_name.rmt_name);
+      }
+      break;
     case ESP_BT_GAP_CFM_REQ_EVT:
       esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
       break;
@@ -923,6 +991,7 @@ void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_
       switch (param->conn_stat.state) {
         case ESP_A2D_CONNECTION_STATE_CONNECTED:
           ESP_LOGI(TAG, "Connected to %s", addr);
+          esp_bt_gap_read_remote_name(param->conn_stat.remote_bda);
           this->failed_connects_ = 0;
           this->rejected_connects_ = 0;
           if (!this->address_configured_ && memcmp(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN)) {

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <esp_a2dp_api.h>
@@ -66,6 +67,10 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   void set_mute_state(bool mute_state) override;
 
   bool is_connected() const { return this->link_state_.load() == LinkState::CONNECTED; }
+  /// Human readable link/pairing state, e.g. for a text sensor (main loop only)
+  const std::string &get_status_text() const { return this->status_text_; }
+  /// Drops the pairing and the stored address and searches for the speaker by name (main loop only)
+  void repair();
 
   // Speaker buttons (AVRCP), fired from the main loop
   Trigger<> *get_play_pause_trigger() { return &this->play_pause_trigger_; }
@@ -86,6 +91,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   void handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
   void handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
   void apply_volume_setting_();
+  void update_status_text_();
 
   void handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
   void handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
@@ -107,6 +113,9 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   bool has_address_{false};
   bool address_configured_{false};  // From YAML; a discovered address is persisted in address_pref_ instead
   ESPPreferenceObject address_pref_;
+  std::string status_text_;
+  std::string remote_name_;  // Written by the BTC task
+  std::mutex remote_name_mutex_;
   std::string device_name_;
   std::string local_name_;
   std::string pin_code_;

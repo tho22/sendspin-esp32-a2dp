@@ -1,5 +1,6 @@
 """Speaker platform that streams audio to a Bluetooth Classic (A2DP) sink, e.g. a Bluetooth speaker."""
 
+from esphome import automation
 import esphome.codegen as cg
 from esphome.components import audio, esp32, speaker
 import esphome.config_validation as cv
@@ -18,6 +19,11 @@ DEPENDENCIES = ["esp32"]
 CONF_DEVICE_NAME = "device_name"
 CONF_KEEP_ALIVE = "keep_alive"
 CONF_TEST_TONE = "test_tone"
+CONF_ON_PLAY_PAUSE = "on_play_pause"
+CONF_ON_STOP = "on_stop"
+CONF_ON_NEXT = "on_next"
+CONF_ON_PREVIOUS = "on_previous"
+CONF_ON_VOLUME = "on_volume"
 CONF_LOCAL_NAME = "local_name"
 CONF_PIN_CODE = "pin_code"
 CONF_RECONNECT_INTERVAL = "reconnect_interval"
@@ -76,6 +82,13 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_KEEP_ALIVE, default=True): cv.boolean,
             # Diagnostic: play a 441 Hz tone instead of idle silence (needs keep_alive)
             cv.Optional(CONF_TEST_TONE, default=False): cv.boolean,
+            # Speaker buttons (AVRCP)
+            cv.Optional(CONF_ON_PLAY_PAUSE): automation.validate_automation(single=True),
+            cv.Optional(CONF_ON_STOP): automation.validate_automation(single=True),
+            cv.Optional(CONF_ON_NEXT): automation.validate_automation(single=True),
+            cv.Optional(CONF_ON_PREVIOUS): automation.validate_automation(single=True),
+            # Volume changed on the speaker, x = 0..1
+            cv.Optional(CONF_ON_VOLUME): automation.validate_automation(single=True),
             cv.Optional(CONF_SAMPLE_RATE, default=A2DP_SAMPLE_RATE): cv.one_of(
                 A2DP_SAMPLE_RATE, int=True
             ),
@@ -106,6 +119,17 @@ async def to_code(config: ConfigType) -> None:
     cg.add(var.set_reconnect_interval(config[CONF_RECONNECT_INTERVAL]))
     cg.add(var.set_keep_alive(config[CONF_KEEP_ALIVE]))
     cg.add(var.set_test_tone(config[CONF_TEST_TONE]))
+
+    for key, getter in (
+        (CONF_ON_PLAY_PAUSE, var.get_play_pause_trigger),
+        (CONF_ON_STOP, var.get_stop_trigger),
+        (CONF_ON_NEXT, var.get_next_trigger),
+        (CONF_ON_PREVIOUS, var.get_previous_trigger),
+    ):
+        if conf := config.get(key):
+            await automation.build_automation(getter(), [], conf)
+    if conf := config.get(CONF_ON_VOLUME):
+        await automation.build_automation(var.get_volume_trigger(), [(cg.float_, "x")], conf)
 
     # Bluetooth Classic with Bluedroid and the A2DP source profile
     esp32.request_bluetooth()

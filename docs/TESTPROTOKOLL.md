@@ -1,6 +1,6 @@
 # Testprotokoll: Sendspin → ESP32 → Bluetooth-Box
 
-Stand: 05.10.2026. Alle Tests mit derselben Hardware und Umgebung.
+Stand: 06.10.2026. Alle Tests mit derselben Hardware und Umgebung.
 
 ## Testumgebung
 
@@ -85,6 +85,23 @@ Kontrolllauf nach dem Aufräumen: 0 Lost sync, 0 Aussetzer, Abholrate ≥ 44 068
 | Play/Pause-Taste | Code 0x46 (PAUSE) → Sendspin-Befehl PAUSE, Stream endet ✔; erneuter Druck startet Wiedergabe ✔ (Nutzerbestätigung) |
 | Play beim Verbinden | wird in den ersten 3 s ignoriert (XB100 sendet von selbst Play) |
 
+## Phase 4: ESPHome-Variante mit den neuen Netzwerk-Einstellungen (06.10.2026)
+
+Übernommen aus der nativen Variante: WLAN-Kompromiss aus run2, Modem-Sleep nicht mehr erzwingen, kein
+Koexistenz-Hinweis `A2DP_STREAMING`, AVRCP-Steuerung (Trigger `on_play_pause`, `on_next`, `on_previous`,
+`on_stop`, `on_volume` → Media-Player-Aktionen).
+
+| Test | Ergebnis |
+|---|---|
+| Wechsel native → ESPHome | Box lehnt den A2DP-Kanal ab (`BTA_AV_OPEN_EVT::FAILED status: 3`, 28×): veralteter Kopplungsschlüssel |
+| Selbstheilung: Funkverbindung steht, A2DP abgelehnt → nach 2 Versuchen alte Kopplung löschen | neu gekoppelt **ohne** Pairing-Modus, verbunden, Stream läuft ✔ |
+| Erster Hörtest (ohne Absolute Volume) | nichts zu hören: Box stand noch auf 19 % (aus der nativen Variante) plus digitale Absenkung → nach „+“ an der Box Ton ✔ |
+| Absolute Volume erkannt | ja, Lautstärke wird in der Box geregelt ✔ |
+| − an der Box | 28 % → 11 % jeweils an Media Player/Music Assistant ✔ |
+| + an der Box, Lautstärke aus Music Assistant, Play/Pause | ✔ (Nutzerbestätigung) |
+| Hörtest | **keine Aussetzer** (Nutzerbestätigung); Log: 0 Lost sync, 0 Aussetzer, Abholrate 44 076 Hz. Beobachtungsdauer nach Stream-Start nur ca. 1,5 min |
+| CPU | Core 0: WLAN 29 %, BT-Stack 22 %, BT-Controller 19 %, BTU 17 % (höher als nativ), Core 1 Leerlauf 39 % |
+
 ## Eigenheiten der Sony SRS-XB100
 
 - Meldet über A2DP Delay Reporting 250 ms Latenz (Startwert für Sendspins Static Delay).
@@ -93,3 +110,6 @@ Kontrolllauf nach dem Aufräumen: 0 Lost sync, 0 Aussetzer, Abholrate ≥ 44 068
 - Schaltet sich ohne Audio nach einiger Zeit ab → Keep-Alive (Stille streamen).
 - Sendet direkt nach dem Verbinden Play und die eigene Lautstärke → 3 s ignorieren.
 - Übernimmt Lautstärkeänderungen per Taste erst, wenn die Quelle sie zurückmeldet.
+- Wurde sie mit einem anderen Gerät bzw. einer anderen Firmware neu gekoppelt, lehnt sie den alten Schlüssel ab,
+  akzeptiert aber eine erneute Kopplung durch die Quelle auch ohne Pairing-Modus.
+- Absolute Volume ist die Lautstärke der Box selbst; sie bleibt beim Wechsel der Firmware erhalten.

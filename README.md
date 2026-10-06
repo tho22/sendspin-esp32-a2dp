@@ -14,7 +14,7 @@ Es gibt zwei Varianten:
 | Variante | Ordner | Stand |
 |---|---|---|
 | **Native ESP-IDF 5.5 (empfohlen)** | `native/` | läuft ohne hörbare Aussetzer |
-| ESPHome | `sendspin-bt-wrover.yaml`, `components/a2dp_source/` | neue Netzwerk-Einstellungen übernommen, damit noch nicht im Hörtest bestätigt; keine Tastensteuerung |
+| ESPHome | `sendspin-bt-wrover.yaml`, `components/a2dp_source/` | läuft ohne hörbare Aussetzer, Tastensteuerung über AVRCP (Kurztest) |
 
 Nur der originale ESP32 hat Bluetooth Classic; ESP32-S3/C3/C6 funktionieren **nicht**.
 
@@ -79,14 +79,20 @@ Spitzenpegel (−90 dBFS = nur Stille) und internem RAM, dazu `Load:` mit der CP
 - Getestet auf ESP32 rev1 (WROVER-B); der PSRAM-Workaround dieser Revision kostet viel CPU. Ein ESP32 mit
   Chip-Revision ≥ 3 (z. B. ESP32-DevKitC-VE mit WROVER-E) dürfte mehr Reserve haben.
 - Keine OTA-Updates in der nativen Variante (Flashen per USB).
-- Die ESPHome-Variante hat keine Tastensteuerung; mit den neuen Netzwerk-Einstellungen ist sie noch nicht
-  im Hörtest bestätigt.
+- Die ESPHome-Variante ist bisher nur kurz getestet (ca. 1,5 min Log nach Stream-Start, Hörtest ohne Aussetzer)
+  und braucht auf Core 0 mehr CPU als die native Variante.
+- Nur die ESPHome-Variante erneuert eine abgelehnte Kopplung automatisch (siehe unten).
 
-## Bedienung über die Box (native Variante)
+## Bedienung über die Box
 
-Über AVRCP: Play/Pause an der Box startet bzw. pausiert die Wiedergabe in Music Assistant, +/− regeln die
+Beide Varianten, über AVRCP: Play/Pause an der Box startet bzw. pausiert die Wiedergabe in Music Assistant, +/− regeln die
 Lautstärke. Unterstützt die Box „Absolute Volume“ (z. B. SRS-XB100), regelt die Box selbst und Lautstärke-
 änderungen werden in beide Richtungen mit Music Assistant abgeglichen; sonst regelt der ESP digital in 5-%-Schritten.
+In der ESPHome-Variante lösen die Tasten Trigger aus (`on_play_pause`, `on_next`, `on_previous`, `on_stop`,
+`on_volume`), die in `sendspin-bt-wrover.yaml` mit dem Media Player verbunden sind.
+
+Lehnt die Box die Verbindung ab, obwohl sie erreichbar ist (z. B. weil sie inzwischen mit der anderen Variante
+gekoppelt wurde), löscht die ESPHome-Variante nach 2 Versuchen die alte Kopplung und koppelt neu.
 
 Alle Messungen und Hörtests: [docs/TESTPROTOKOLL.md](docs/TESTPROTOKOLL.md)
 
@@ -112,7 +118,7 @@ There are two variants:
 | Variant | Location | Status |
 |---|---|---|
 | **Native ESP-IDF 5.5 (recommended)** | `native/` | plays without audible dropouts |
-| ESPHome | `sendspin-bt-wrover.yaml`, `components/a2dp_source/` | new network settings applied, not yet confirmed by a listening test; no speaker button control |
+| ESPHome | `sendspin-bt-wrover.yaml`, `components/a2dp_source/` | plays without audible dropouts, speaker buttons via AVRCP (short test) |
 
 Only the original ESP32 has Bluetooth Classic; ESP32-S3/C3/C6 do **not** work.
 
@@ -177,14 +183,20 @@ peak level (−90 dBFS = silence only) and internal RAM, plus `Load:` with the C
 - Tested on ESP32 rev1 (WROVER-B); the PSRAM workaround of this revision costs a lot of CPU. An ESP32 with chip
   revision ≥ 3 (e.g. ESP32-DevKitC-VE with WROVER-E) should have more headroom.
 - No OTA updates in the native variant (flash via USB).
-- The ESPHome variant has no speaker button control and is not yet confirmed by a listening test with the new
-  network settings.
+- The ESPHome variant has only been tested briefly (about 1.5 min of log after stream start, listening test without
+  dropouts) and needs more CPU on core 0 than the native variant.
+- Only the ESPHome variant renews a rejected pairing automatically (see below).
 
-## Speaker controls (native variant)
+## Speaker controls
 
-Via AVRCP: play/pause on the speaker starts or pauses playback in Music Assistant, +/− change the volume. If the
+Both variants, via AVRCP: play/pause on the speaker starts or pauses playback in Music Assistant, +/− change the volume. If the
 speaker supports absolute volume (e.g. SRS-XB100), it applies the volume itself and changes are synced with
 Music Assistant in both directions; otherwise the ESP applies digital volume in 5 % steps.
+In the ESPHome variant the buttons fire triggers (`on_play_pause`, `on_next`, `on_previous`, `on_stop`,
+`on_volume`) that `sendspin-bt-wrover.yaml` connects to the media player.
+
+If the speaker is reachable but refuses the connection (e.g. because it was paired with the other variant in the
+meantime), the ESPHome variant drops the old pairing after 2 attempts and pairs again.
 
 All measurements and listening tests (German): [docs/TESTPROTOKOLL.md](docs/TESTPROTOKOLL.md)
 

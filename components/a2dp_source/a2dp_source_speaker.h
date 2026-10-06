@@ -12,6 +12,7 @@
 
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esphome/components/speaker/speaker.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/preferences.h"
 
@@ -66,6 +67,14 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
 
   bool is_connected() const { return this->link_state_.load() == LinkState::CONNECTED; }
 
+  // Speaker buttons (AVRCP), fired from the main loop
+  Trigger<> *get_play_pause_trigger() { return &this->play_pause_trigger_; }
+  Trigger<> *get_stop_trigger() { return &this->stop_trigger_; }
+  Trigger<> *get_next_trigger() { return &this->next_trigger_; }
+  Trigger<> *get_previous_trigger() { return &this->previous_trigger_; }
+  /// Volume (0..1) changed on the speaker
+  Trigger<float> *get_volume_trigger() { return &this->volume_trigger_; }
+
  protected:
   // Bluedroid callbacks, called from the BTC task
   static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
@@ -74,6 +83,9 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   static void report_task(void *params);
   static void avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
   static void avrc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
+  void handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
+  void handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
+  void apply_volume_setting_();
 
   void handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
   void handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
@@ -111,9 +123,27 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   std::atomic<bool> discovery_stopped_{false};
   std::atomic<bool> pause_state_{false};
   std::atomic<uint32_t> failed_connects_{0};
+  std::atomic<uint32_t> rejected_connects_{0};  // The link came up but the speaker refused A2DP
+  std::atomic<bool> acl_up_{false};             // A baseband link to the speaker exists for the current attempt
   std::atomic<bool> address_dirty_{false};  // remote_address_ changed by the BTC task, persist in loop()
   std::atomic<bool> streaming_{false};  // Data callback may consume the ring buffer
   std::atomic<int32_t> q31_volume_factor_{INT32_MAX};
+
+  // AVRCP: the speaker's buttons and absolute volume
+  enum class RemoteCommand : uint8_t { NONE, PLAY_PAUSE, STOP, NEXT, PREVIOUS };
+  std::atomic<uint8_t> volume_percent_{100};
+  std::atomic<int8_t> abs_volume_{-1};  // Speaker supports absolute volume: -1 unknown, 0 no, 1 yes
+  std::atomic<bool> avrc_ct_connected_{false};
+  esp_avrc_rn_evt_cap_mask_t peer_rn_cap_{};
+  uint32_t ct_connected_ms_{0};
+  uint32_t tg_connected_ms_{0};
+  std::atomic<RemoteCommand> pending_command_{RemoteCommand::NONE};
+  std::atomic<int> pending_volume_{-1};
+  Trigger<> play_pause_trigger_;
+  Trigger<> stop_trigger_;
+  Trigger<> next_trigger_;
+  Trigger<> previous_trigger_;
+  Trigger<float> volume_trigger_;
   std::atomic<uint32_t> underrun_bytes_{0};
 
   // Smoothed playback clock, only touched by the data callback (BTC task)

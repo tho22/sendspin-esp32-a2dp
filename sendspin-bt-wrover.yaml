@@ -83,6 +83,20 @@ speaker:
     # liegt im internen RAM (schneller Zugriff aus dem Bluetooth-Task), daher knapp halten
     buffer_duration: 200ms
     reconnect_interval: 15s
+    # Tasten der Box (AVRCP) an den Media Player weiterreichen; er gibt sie per Sendspin an Music Assistant
+    on_play_pause:
+      - media_player.toggle: media_player_bt
+    on_next:
+      - media_player.next: media_player_bt
+    on_previous:
+      - media_player.previous: media_player_bt
+    on_stop:
+      - media_player.stop: media_player_bt
+    # Lautstärke an der Box geändert (Absolute Volume): Media Player und damit Music Assistant nachziehen
+    on_volume:
+      - media_player.volume_set:
+          id: media_player_bt
+          volume: !lambda return x;
 
 sendspin:
   # Kein Task-Stack im PSRAM: auf ESP32 rev1 führt das zu Abstürzen im Sendspin-Puffer

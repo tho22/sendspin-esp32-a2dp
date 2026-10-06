@@ -33,7 +33,17 @@ static constexpr size_t BYTES_PER_FRAME = 4;
 static constexpr float SOFTWARE_VOLUME_MIN_DB = -49.0f;
 
 static constexpr uint32_t MEDIA_CTRL_RETRY_MS = 1000;
-static constexpr uint32_t MAX_FAILED_CONNECTS = 4;  // Then restart the Bluetooth stack
+static constexpr uint32_t MAX_FAILED_CONNECTS = 4;    // Then restart the Bluetooth stack
+static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pairing and pair again
+
+// AVRCP: some speakers (e.g. Sony SRS-XB100) send play and their own volume right after connecting; ignore that
+static constexpr uint32_t AVRC_CONNECT_GRACE_MS = 3000;
+static constexpr int AVRC_VOLUME_STEP = 5;  // % per volume button press without absolute volume
+static constexpr uint8_t AVRC_TL_GET_CAPS = 0;
+static constexpr uint8_t AVRC_TL_VOLUME = 1;
+
+static uint8_t percent_to_avrc(uint8_t percent) { return static_cast<uint8_t>((percent * 127 + 50) / 100); }
+static uint8_t avrc_to_percent(uint8_t volume) { return static_cast<uint8_t>((volume * 100 + 63) / 127); }
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 30000;
 static constexpr size_t DISCARD_CHUNK_MS = 20;
 
@@ -190,6 +200,10 @@ bool A2DPSourceSpeaker::init_bluetooth_() {
   if ((err = esp_avrc_tg_init()) != ESP_OK) {
     ESP_LOGW(TAG, "AVRCP target init failed: %s", esp_err_to_name(err));
   }
+  // The speaker may register for our volume (absolute volume, target side)
+  esp_avrc_rn_evt_cap_mask_t evt_set = {0};
+  esp_avrc_rn_evt_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &evt_set, ESP_AVRC_RN_VOLUME_CHANGE);
+  esp_avrc_tg_set_rn_evt_cap(&evt_set);
 
   esp_a2d_register_callback(A2DPSourceSpeaker::a2dp_callback);
   esp_a2d_source_register_data_callback(A2DPSourceSpeaker::data_callback);
@@ -259,6 +273,15 @@ void A2DPSourceSpeaker::loop() {
       if (!this->attempted_once_ || (now - this->last_attempt_ms_ >= this->reconnect_interval_ms_)) {
         this->attempted_once_ = true;
         this->last_attempt_ms_ = now;
+        if (this->rejected_connects_.load() >= MAX_REJECTED_CONNECTS) {
+          // The speaker answers but refuses the A2DP channel, typically because it no longer knows our link key
+          // (it was paired again with another firmware or device). Drop the stale pairing so the next connect pairs
+          // again.
+          ESP_LOGW(TAG, "Speaker rejects the connection, removing the stored pairing; if it does not pair again, "
+                        "put it into pairing mode");
+          esp_bt_gap_remove_bond_device(this->remote_address_);
+          this->rejected_connects_ = 0;
+        }
         if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
           this->restart_bluetooth_();
           if (this->is_failed()) {
@@ -339,6 +362,28 @@ void A2DPSourceSpeaker::loop() {
   if (now - this->last_load_log_ms_ >= STATS_LOG_INTERVAL_MS) {
     this->last_load_log_ms_ = now;
     this->log_task_load_();
+  }
+
+  // Speaker buttons and volume, received in the BTC task, fire the automations from the main loop
+  const int remote_volume = this->pending_volume_.exchange(-1);
+  if (remote_volume >= 0) {
+    this->volume_trigger_.trigger(remote_volume / 100.0f);
+  }
+  switch (this->pending_command_.exchange(RemoteCommand::NONE)) {
+    case RemoteCommand::PLAY_PAUSE:
+      this->play_pause_trigger_.trigger();
+      break;
+    case RemoteCommand::STOP:
+      this->stop_trigger_.trigger();
+      break;
+    case RemoteCommand::NEXT:
+      this->next_trigger_.trigger();
+      break;
+    case RemoteCommand::PREVIOUS:
+      this->previous_trigger_.trigger();
+      break;
+    case RemoteCommand::NONE:
+      break;
   }
 
   const uint32_t underruns = this->underrun_bytes_.load();
@@ -435,6 +480,7 @@ void A2DPSourceSpeaker::connect_() {
   format_bda(this->remote_address_, addr);
   ESP_LOGI(TAG, "Connecting to %s", addr);
   this->connect_started_ms_ = millis();
+  this->acl_up_ = false;
   this->link_state_ = LinkState::CONNECTING;
   esp_err_t err = esp_a2d_source_connect(this->remote_address_);
   if (err != ESP_OK) {
@@ -534,25 +580,30 @@ void A2DPSourceSpeaker::drain_ring_buffer_() {
 
 void A2DPSourceSpeaker::set_volume(float volume) {
   this->volume_ = volume;
-  if (this->mute_state_) {
-    return;
-  }
-  if (volume >= 1.0f) {
-    this->q31_volume_factor_ = INT32_MAX;
-  } else if (volume <= 0.0f) {
-    this->q31_volume_factor_ = 0;
-  } else {
-    this->q31_volume_factor_ =
-        esp_audio_libs::gain::db_to_q31(remap<float, float>(volume, 0.0f, 1.0f, SOFTWARE_VOLUME_MIN_DB, 0.0f));
-  }
+  this->volume_percent_ = static_cast<uint8_t>(std::lround(clamp(volume, 0.0f, 1.0f) * 100.0f));
+  this->apply_volume_setting_();
 }
 
 void A2DPSourceSpeaker::set_mute_state(bool mute_state) {
   this->mute_state_ = mute_state;
-  if (mute_state) {
+  this->apply_volume_setting_();
+}
+
+void A2DPSourceSpeaker::apply_volume_setting_() {
+  const uint8_t percent = this->volume_percent_.load();
+  if (this->abs_volume_.load() == 1) {
+    // The speaker applies the volume (AVRCP absolute volume): full digital level, so the volume is not applied twice
+    this->q31_volume_factor_ = this->mute_state_ ? 0 : INT32_MAX;
+    if (this->avrc_ct_connected_.load()) {
+      esp_avrc_ct_send_set_absolute_volume_cmd(AVRC_TL_VOLUME, percent_to_avrc(percent));
+    }
+  } else if (this->mute_state_ || percent == 0) {
     this->q31_volume_factor_ = 0;
+  } else if (percent >= 100) {
+    this->q31_volume_factor_ = INT32_MAX;
   } else {
-    this->set_volume(this->volume_);
+    this->q31_volume_factor_ = esp_audio_libs::gain::db_to_q31(
+        remap<float, float>(percent / 100.0f, 0.0f, 1.0f, SOFTWARE_VOLUME_MIN_DB, 0.0f));
   }
 }
 
@@ -581,14 +632,140 @@ void A2DPSourceSpeaker::a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param
 }
 
 void A2DPSourceSpeaker::avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param) {
-  if (event == ESP_AVRC_CT_CONNECTION_STATE_EVT) {
-    ESP_LOGD(TAG, "AVRCP controller %s", param->conn_stat.connected ? "connected" : "disconnected");
+  if (instance_ != nullptr) {
+    instance_->handle_avrc_ct_event_(event, param);
   }
 }
 
 void A2DPSourceSpeaker::avrc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param) {
-  if (event == ESP_AVRC_TG_CONNECTION_STATE_EVT) {
-    ESP_LOGD(TAG, "AVRCP target %s", param->conn_stat.connected ? "connected" : "disconnected");
+  if (instance_ != nullptr) {
+    instance_->handle_avrc_tg_event_(event, param);
+  }
+}
+
+// Controller side: the speaker is the AVRCP target for absolute volume
+void A2DPSourceSpeaker::handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param) {
+  switch (event) {
+    case ESP_AVRC_CT_CONNECTION_STATE_EVT:
+      ESP_LOGD(TAG, "AVRCP controller %s", param->conn_stat.connected ? "connected" : "disconnected");
+      this->ct_connected_ms_ = millis();
+      this->avrc_ct_connected_ = param->conn_stat.connected;
+      if (param->conn_stat.connected) {
+        // Which notifications does the speaker support? Absolute volume = volume change notifications
+        esp_avrc_ct_send_get_rn_capabilities_cmd(AVRC_TL_GET_CAPS);
+      } else {
+        this->peer_rn_cap_.bits = 0;
+        this->abs_volume_ = -1;
+      }
+      break;
+    case ESP_AVRC_CT_GET_RN_CAPABILITIES_RSP_EVT: {
+      this->peer_rn_cap_.bits = param->get_rn_caps_rsp.evt_set.bits;
+      const bool abs = esp_avrc_rn_evt_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_TEST, &this->peer_rn_cap_,
+                                                          ESP_AVRC_RN_VOLUME_CHANGE);
+      this->abs_volume_ = abs ? 1 : 0;
+      ESP_LOGI(TAG, "Speaker %s absolute volume", abs ? "supports" : "does not support");
+      // Now that it is known who applies the volume, apply ours (on the speaker or as digital gain)
+      this->apply_volume_setting_();
+      if (abs) {
+        esp_avrc_ct_send_register_notification_cmd(AVRC_TL_VOLUME, ESP_AVRC_RN_VOLUME_CHANGE, 0);
+      }
+      break;
+    }
+    case ESP_AVRC_CT_CHANGE_NOTIFY_EVT:
+      if (param->change_ntf.event_id == ESP_AVRC_RN_VOLUME_CHANGE) {
+        const uint8_t peer_volume = param->change_ntf.event_parameter.volume;
+        if (millis() - this->ct_connected_ms_ < AVRC_CONNECT_GRACE_MS) {
+          // The speaker's own volume when connecting: ours has been applied instead
+          ESP_LOGD(TAG, "Ignoring speaker volume right after connecting");
+        } else {
+          // Changed on the speaker (buttons). Some speakers only apply it once the source sets it, so echo it back
+          // unchanged (setting the current value does not trigger a new notification), and pass it on
+          const uint8_t percent = avrc_to_percent(peer_volume);
+          ESP_LOGI(TAG, "Volume changed on the speaker: %u%%", percent);
+          esp_avrc_ct_send_set_absolute_volume_cmd(AVRC_TL_VOLUME, peer_volume);
+          this->volume_percent_ = percent;
+          this->pending_volume_ = percent;
+        }
+        // Notifications are one-shot: register again
+        esp_avrc_ct_send_register_notification_cmd(AVRC_TL_VOLUME, ESP_AVRC_RN_VOLUME_CHANGE, 0);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// Target side: the speaker sends button presses (passthrough) to us
+void A2DPSourceSpeaker::handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param) {
+  switch (event) {
+    case ESP_AVRC_TG_CONNECTION_STATE_EVT:
+      ESP_LOGD(TAG, "AVRCP target %s", param->conn_stat.connected ? "connected" : "disconnected");
+      if (param->conn_stat.connected) {
+        this->tg_connected_ms_ = millis();
+        // All passthrough commands are rejected by default. TG init is asynchronous, so the filter can only be set
+        // once it has completed, which is guaranteed once the speaker connected to the target.
+        static constexpr esp_avrc_pt_cmd_t CMDS[] = {ESP_AVRC_PT_CMD_PLAY,     ESP_AVRC_PT_CMD_PAUSE,
+                                                     ESP_AVRC_PT_CMD_STOP,     ESP_AVRC_PT_CMD_FORWARD,
+                                                     ESP_AVRC_PT_CMD_BACKWARD, ESP_AVRC_PT_CMD_VOL_UP,
+                                                     ESP_AVRC_PT_CMD_VOL_DOWN};
+        esp_avrc_psth_bit_mask_t cmd_set = {0};
+        for (esp_avrc_pt_cmd_t cmd : CMDS) {
+          esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &cmd_set, cmd);
+        }
+        esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &cmd_set);
+      }
+      break;
+    case ESP_AVRC_TG_PASSTHROUGH_CMD_EVT: {
+      const uint8_t key = param->psth_cmd.key_code;
+      if (param->psth_cmd.key_state != ESP_AVRC_PT_CMD_STATE_PRESSED) {
+        break;  // Act on press only
+      }
+      if (millis() - this->tg_connected_ms_ < AVRC_CONNECT_GRACE_MS) {
+        ESP_LOGI(TAG, "Ignoring button 0x%x right after connecting", key);
+        break;
+      }
+      ESP_LOGI(TAG, "Speaker button 0x%x", key);
+      switch (key) {
+        case ESP_AVRC_PT_CMD_PLAY:
+        case ESP_AVRC_PT_CMD_PAUSE:
+          // The A2DP stream runs all the time (keep alive), so the speaker cannot know whether music plays and its
+          // play/pause choice is unreliable: let the automation toggle
+          this->pending_command_ = RemoteCommand::PLAY_PAUSE;
+          break;
+        case ESP_AVRC_PT_CMD_STOP:
+          this->pending_command_ = RemoteCommand::STOP;
+          break;
+        case ESP_AVRC_PT_CMD_FORWARD:
+          this->pending_command_ = RemoteCommand::NEXT;
+          break;
+        case ESP_AVRC_PT_CMD_BACKWARD:
+          this->pending_command_ = RemoteCommand::PREVIOUS;
+          break;
+        case ESP_AVRC_PT_CMD_VOL_UP:
+        case ESP_AVRC_PT_CMD_VOL_DOWN: {
+          // Speakers without absolute volume send volume buttons as commands: step our (digital) volume
+          const int current = this->volume_percent_.load();
+          const int next = key == ESP_AVRC_PT_CMD_VOL_UP ? std::min(current + AVRC_VOLUME_STEP, 100)
+                                                         : std::max(current - AVRC_VOLUME_STEP, 0);
+          this->volume_percent_ = static_cast<uint8_t>(next);
+          this->apply_volume_setting_();
+          this->pending_volume_ = next;
+          break;
+        }
+        default:
+          break;
+      }
+      break;
+    }
+    case ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT:
+      if (param->reg_ntf.event_id == ESP_AVRC_RN_VOLUME_CHANGE) {
+        esp_avrc_rn_param_t rn_param = {};
+        rn_param.volume = percent_to_avrc(this->volume_percent_.load());
+        esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &rn_param);
+      }
+      break;
+    default:
+      break;
   }
 }
 
@@ -709,6 +886,13 @@ void A2DPSourceSpeaker::handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_ga
         this->discovery_stopped_ = true;
       }
       break;
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+      // Tells a speaker that is off (no link) apart from one that answers but refuses A2DP
+      if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
+          memcmp(param->acl_conn_cmpl_stat.bda, this->remote_address_, ESP_BD_ADDR_LEN) == 0) {
+        this->acl_up_ = true;
+      }
+      break;
     case ESP_BT_GAP_AUTH_CMPL_EVT:
       if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
         ESP_LOGI(TAG, "Paired with '%s'", param->auth_cmpl.device_name);
@@ -740,6 +924,7 @@ void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_
         case ESP_A2D_CONNECTION_STATE_CONNECTED:
           ESP_LOGI(TAG, "Connected to %s", addr);
           this->failed_connects_ = 0;
+          this->rejected_connects_ = 0;
           if (!this->address_configured_ && memcmp(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN)) {
             // The sink connected on its own (e.g. after power on); remember it for outgoing reconnects
             memcpy(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
@@ -752,7 +937,11 @@ void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_
         case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
           ESP_LOGW(TAG, "Disconnected from %s", addr);
           if (this->link_state_.load() == LinkState::CONNECTING) {
-            this->failed_connects_++;
+            if (this->acl_up_.load()) {
+              this->rejected_connects_++;
+            } else {
+              this->failed_connects_++;
+            }
           }
           this->media_state_ = MediaState::SUSPENDED;
           this->media_ctrl_pending_ = false;

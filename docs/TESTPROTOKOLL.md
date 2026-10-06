@@ -98,7 +98,8 @@ Koexistenz-Hinweis `A2DP_STREAMING`, AVRCP-Steuerung (Trigger `on_play_pause`, `
 | Erster Hörtest (ohne Absolute Volume) | nichts zu hören: Box stand noch auf 19 % (aus der nativen Variante) plus digitale Absenkung → nach „+“ an der Box Ton ✔ |
 | Absolute Volume erkannt | ja, Lautstärke wird in der Box geregelt ✔ |
 | − an der Box | 28 % → 11 % jeweils an Media Player/Music Assistant ✔ |
-| + an der Box, Lautstärke aus Music Assistant, Play/Pause | ✔ (Nutzerbestätigung) |
+| Play/Pause-Taste | Code 0x46 → Media Player IDLE (Pause), 4 s später 0x44 → PLAYING (über `media_player.toggle`) ✔ |
+| + an der Box, Lautstärke aus Music Assistant | ✔ (Nutzerbestätigung) |
 | Hörtest | **keine Aussetzer** (Nutzerbestätigung); Log: 0 Lost sync, 0 Aussetzer, Abholrate 44 076 Hz. Beobachtungsdauer nach Stream-Start nur ca. 1,5 min |
 | CPU | Core 0: WLAN 29 %, BT-Stack 22 %, BT-Controller 19 %, BTU 17 % (höher als nativ), Core 1 Leerlauf 39 % |
 

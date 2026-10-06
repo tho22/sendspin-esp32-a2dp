@@ -44,6 +44,7 @@ brings a new IDF version.
 `http://sendspin-bt-1.local` shows:
 
 - **Bluetooth status**: connected/disconnected, name and address of the speaker
+- **WiFi signal** (diagnostic)
 - **Title, artist, album** of the current track (Sendspin metadata role)
 - **Volume** slider and **Play/Pause**, **Next track**, **Previous track** buttons
 - **Re-pair speaker**: drops the pairing and the stored address and searches for the speaker by name
@@ -88,10 +89,11 @@ slightly less than real time until the next reboot.
 
 | Measure | Reason |
 |---|---|
-| SBC 229 instead of 328 kbit/s (IDF patch) | WiFi and Bluetooth share one radio; at 328 kbit/s the link only managed ~78 % of real time |
+| SBC 229 instead of 328 kbit/s (IDF patch) | WiFi and Bluetooth share one radio; with the old WiFi settings the link only managed ~78 % of real time at 328 kbit/s. With the current settings it keeps up, but dropouts are still audible without the patch |
 | Catch-up limit 27 instead of 21 frames per tick (IDF patch) | When the Bluetooth task runs late, the stack never caught up → too little audio → the speaker runs dry |
 | WiFi: receive aggregation with BA window 6, no TX AMPDU, buffers 12/40, TCP window 32 KB | Compromise from A/B runs: without aggregation the TCP stream backs up and Sendspin's clock sync breaks (silence only); with long bursts (BA 32, 16/64, 64 KB) WiFi disturbs A2DP (dropouts) |
 | lwIP receive mailboxes 64 (default 6) | otherwise lwIP drops segments and TCP retransmissions inflate the round trip of the sync messages |
+| Out-of-order TCP segments unlimited (ESPHome sets 4) | with 4, a single lost WiFi frame discards most of the 32 KB window; the retransmissions stalled the stream for 5–20 s (ESPHome only, native uses the IDF default) |
 | Sendspin buffer 1 MB in PSRAM | Music Assistant fills it ahead of time; with 150 KB dense music (FLAC ~1 Mbit/s) overflowed it and every dropped chunk was a 104.5 ms gap |
 | `malloc()` above 4 KB may use PSRAM (32 KB internal reserved) | otherwise Sendspin's incoming chunks exhaust the internal RAM (ESPHome: abort in `operator new`) |
 | Modem sleep only outside streaming | Sendspin requests "high performance" WiFi while streaming |
@@ -116,6 +118,7 @@ All measurements and listening tests: [docs/TEST_REPORT.md](docs/TEST_REPORT.md)
   revision ≥ 3 (e.g. ESP32-DevKitC-VE with WROVER-E) should have more headroom.
 - The ESPHome variant needs more CPU on core 0 than the native one and has only been tested in short runs.
 - No OTA updates and no web interface in the native variant.
+- Switching from ESPHome to the native variant loses the native pairing: put the speaker into pairing mode once.
 - Switching between the variants: the speaker's own volume (absolute volume) carries over; a speaker turned down
   in one variant stays quiet in the other.
 

@@ -32,6 +32,10 @@ esp32:
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "8192"
       CONFIG_LWIP_TCP_RECVMBOX_SIZE: "64"
       CONFIG_LWIP_TCPIP_RECVMBOX_SIZE: "64"
+      # Keep out-of-order TCP segments (ESPHome limits them to 4, the IDF default is unlimited): with a 32 KB window a
+      # single lost frame otherwise discards everything behind it, and the retransmissions stalled the stream for
+      # seconds while the native variant played cleanly in the same environment
+      CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS: "0"
       # Like the native variant: malloc() above 4 KB may use PSRAM (32 KB internal kept in reserve). With
       # ESPHome's default (PSRAM only via heap_caps) Sendspin's incoming chunks exhausted the internal RAM once
       # Music Assistant filled the 1 MB buffer (abort in operator new)
@@ -151,6 +155,11 @@ sensor:
     unit_of_measurement: B
     update_interval: 30s
     lambda: return heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  # WiFi and Bluetooth share one radio: a weak signal means more retransmissions and less airtime for both
+  - platform: wifi_signal
+    name: WiFi signal
+    entity_category: diagnostic
+    update_interval: 30s
 
 # Web interface: http://sendspin-bt-1.local (status, track info, controls, re-pairing)
 web_server:

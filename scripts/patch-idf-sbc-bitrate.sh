@@ -20,6 +20,8 @@ BACKUP="$FILE.orig"
 if [[ "${1:-}" == "--revert" ]]; then
   [[ -f "$BACKUP" ]] || { echo "No backup found, nothing to do"; exit 0; }
   mv "$BACKUP" "$FILE"
+  # The backup keeps its old timestamp: touch it, otherwise builds keep the patched object file
+  touch "$FILE"
   echo "Original restored"
   exit 0
 fi

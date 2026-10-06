@@ -164,6 +164,37 @@ tested on the device).
 Still open: when switching the speaker off, the SRS-XB100 once sent pause 80 s before it disconnected, so the 1 s
 confirmation window did not filter it and Music Assistant stopped.
 
+## Phase 8: Stalls in the ESPHome variant, IDF patch re-check (2026-10-06)
+
+After phase 7 the ESPHome variant ran cleanly for ~20 min, then the stream stalled repeatedly: no data from the
+server for 5–20 s (time sync messages timed out as well), buffer underruns of up to 5 s, Music Assistant reopened
+the connection every 30–60 s.
+
+| Test | Result |
+|---|---|
+| WiFi signal sensor (new, diagnostic) | −57 to −82 dBm without any correlation to the stalls (clean phases at −82 dBm, stalls at −57 dBm) |
+| Ping PC → ESP | 50–120 ms in clean phases, 300–500 ms during stalls; PC → Music Assistant 3–10 ms |
+| 2.4 GHz channel 11 → 1 (a strong foreign network shared channel 11) | stalls continued |
+| **Native variant in the same environment** (13 min) | **0 lost sync, 0 underruns**, ping 10–154 ms → the cause is specific to ESPHome |
+| sdkconfig comparison | ESPHome sets `CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=4` (IDF default 0 = unlimited): with a 32 KB window a single lost WiFi frame discards most segments behind it |
+| ESPHome with `CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS: "0"` | 9.5 min: 1 lost sync together with 1 clock resync (Bluetooth hiccup), otherwise clean, pull rate 43,042–44,332 Hz |
+
+### IDF patch re-check (native variant, current WiFi settings, 10 min each)
+
+| | With patch (229 kbit/s, 27 frames/tick) | Without patch (328 kbit/s, 21 frames/tick) |
+|---|---|---|
+| Pull rate | 43,919–44,277 Hz | 43,771–44,295 Hz |
+| Lost sync / underruns | 0 / 0 | 0 / 0 |
+| Pull jitter (clock error max) | up to 268 ms | up to 521 ms |
+| Listening | no dropouts | **dropouts audible** |
+
+The ~78 % pull rate at 328 kbit/s from phase 1 came from the old WiFi settings. With the current settings the stack
+keeps up, but the radio link still drops audio that no log shows → the patch stays. To be re-checked on ESP32
+revision 3 boards (no PSRAM cache workaround, more headroom on core 0).
+
+Pitfall found: `patch-idf-sbc-bitrate.sh --revert` restored the backup with its old timestamp, so builds kept the
+patched object file. The script now touches the file.
+
 ## Quirks of the Sony SRS-XB100
 
 - Reports 250 ms latency via A2DP delay reporting (initial value for Sendspin's static delay).

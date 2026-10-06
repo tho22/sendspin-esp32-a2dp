@@ -92,7 +92,8 @@ slightly less than real time until the next reboot.
 | Catch-up limit 27 instead of 21 frames per tick (IDF patch) | When the Bluetooth task runs late, the stack never caught up → too little audio → the speaker runs dry |
 | WiFi: receive aggregation with BA window 6, no TX AMPDU, buffers 12/40, TCP window 32 KB | Compromise from A/B runs: without aggregation the TCP stream backs up and Sendspin's clock sync breaks (silence only); with long bursts (BA 32, 16/64, 64 KB) WiFi disturbs A2DP (dropouts) |
 | lwIP receive mailboxes 64 (default 6) | otherwise lwIP drops segments and TCP retransmissions inflate the round trip of the sync messages |
-| Sendspin buffer 150 KB | 64 KB already caused occasional underruns |
+| Sendspin buffer 1 MB in PSRAM | Music Assistant fills it ahead of time; with 150 KB dense music (FLAC ~1 Mbit/s) overflowed it and every dropped chunk was a 104.5 ms gap |
+| `malloc()` above 4 KB may use PSRAM (32 KB internal reserved) | otherwise Sendspin's incoming chunks exhaust the internal RAM (ESPHome: abort in `operator new`) |
 | Modem sleep only outside streaming | Sendspin requests "high performance" WiFi while streaming |
 | No coexistence hint `A2DP_STREAMING` | gives Bluetooth priority and makes WiFi latency much worse |
 | Main loop, Sendspin threads, TCP/IP on core 1 | keeps core 0 for the WiFi and Bluetooth stacks |

@@ -21,8 +21,8 @@ menu "Sendspin A2DP Bridge"
         default "SRS-XB100"
 
     config APP_SENDSPIN_BUFFER_SIZE
-        int "Sendspin audio buffer (bytes); small keeps WiFi bursts short"
-        default 150000
+        int "Sendspin audio buffer (bytes, PSRAM) for encoded audio"
+        default 1000000
 
     config APP_STATIC_DELAY_MS
         int "Initial static delay (ms), compensates the speaker latency"

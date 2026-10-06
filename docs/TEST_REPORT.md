@@ -41,7 +41,7 @@ As of 2026-10-06. All tests with the same hardware and environment.
 | 13 | WiFi driver on core 1 | core 0 idle 11–17 %, but the decoder starves (gaps up to 3.4 s) | worse |
 | 14 | WiFi buffers in internal RAM | core 0 idle **50 %**, but RAM exhausted → crash in `fixed_queue_new` | — |
 | 15 | **441 Hz test tone without WiFi traffic** | — | **clean** → cause is the WiFi coexistence |
-| 16 | Sendspin buffer 150 KB, TCP window 16 KB | no buffer underruns | fewer dropouts |
+| 16 | Sendspin buffer 150 KB, TCP window 16 KB | no buffer underruns | fewer dropouts (later found too small for dense music, see phase 7) |
 | 17 | Sendspin buffer 75 KB, TCP window 8 KB | 60–70 `Lost sync`/min, 39 underruns | worse |
 
 Result of phase 1: clean on the ESP side, small dropouts remained on the radio link.
@@ -122,7 +122,7 @@ Findings after the web interface test:
 
 | Observation | Cause | Fix |
 |---|---|---|
-| After "Re-pair speaker": 80–100 lost syncs and 100–146 dropped chunks per minute, each gap 104.5 ms (= one 4608-sample FLAC block), until the next reboot | after the inquiry (discovery) the A2DP stack kept pulling 1–4 % less than real time, Sendspin's buffer overflowed. Reconnects without inquiry (speaker off/on) stayed clean | restart the Bluetooth stack after a discovery, before connecting |
+| After "Re-pair speaker": 80–100 lost syncs and 100–146 dropped chunks per minute, each gap 104.5 ms (= one 4608-sample FLAC block), until the next reboot | suspected: after the inquiry (discovery) the A2DP stack pulls less than real time. **Wrong diagnosis**, see phase 7 | restart the Bluetooth stack after a discovery, before connecting (kept, but did not fix the dropouts) |
 | Switching the speaker off stops playback in Music Assistant | the SRS-XB100 sends pause (0x46) ~0.5 s before it disconnects | act on play/pause only if the speaker is still connected 1 s later |
 | ESP rebooted every 15 min ("No clients; rebooting") | ESPHome reboots without a connected API client (Home Assistant) | `api: reboot_timeout: 0s` |
 | Play on the speaker did nothing after Music Assistant had stopped | `media_player.toggle` needs an active source | play/pause/next/previous/stop sent as Sendspin controller commands |
@@ -135,11 +135,34 @@ Verification (ESPHome variant):
 | Pause on the speaker | 0x44 → stopped 1 s later ✔ |
 | Speaker switched off | pause arrives together with the disconnect → "Ignoring play/pause sent while the speaker disconnected" ✔, playback in Music Assistant not stopped |
 | Reconnect after power on, play | connected after 16 s, play starts playback ✔ |
-| "Re-pair speaker" | "Speaker found, restarting Bluetooth before connecting", paired and connected ✔; one minute with 51 lost syncs (pull rate 43,019 Hz), afterwards clean (44,081–44,146 Hz, 0 lost sync) — before the fix the dropouts lasted until the next reboot |
+| "Re-pair speaker" | "Speaker found, restarting Bluetooth before connecting", paired and connected ✔; **dropouts continued** (lost syncs for minutes). An earlier version of this report claimed they stopped after one minute; that came from evaluating a log that was still being written |
 | No reboot | no "No clients; rebooting" during the test ✔ |
 
 The native firmware received the same fixes for discovery and play/pause (compiled, not yet tested on the device;
 it has no API and therefore no reboot timeout).
+
+## Phase 7: Real cause of the 104.5 ms dropouts (2026-10-06)
+
+The dropouts came back without any re-pairing, also right after a fresh boot and after switching the speaker off
+and on (log: 959 lost syncs in 13 min).
+
+| Observation | Finding |
+|---|---|
+| Pull rate of the A2DP stack during the dropouts | 44,040–44,500 Hz, i.e. real time: Bluetooth was not the cause |
+| `Failed to send audio chunk` before every `Lost sync` | Sendspin's encoded audio buffer (150 KB) was full and incoming chunks were dropped |
+| `Lost sync` of +104.5 ms (or multiples) | positive error = gap in the timeline: exactly the dropped chunk, filled with silence |
+| Clean runs before (radio stream) vs. dropouts (music) | Music Assistant fills the buffer ahead of time; dense music compresses worse (FLAC ~1 Mbit/s) and overflowed 150 KB |
+
+| # | Measure | Result |
+|---|---|---|
+| 1 | Sendspin buffer 150 KB → 1 MB (ESPHome default, allocated in PSRAM) | no dropouts, but reboots 1–20 s after every stream start: abort in `operator new` (from Sendspin's state message, triggered among others by volume changes). Internal heap down to ~37 KB: the larger read-ahead kept more incoming chunks in internal RAM, since ESPHome only uses PSRAM on explicit request |
+| 2 | + `CONFIG_SPIRAM_USE_MALLOC` (`malloc()` above 4 KB may use PSRAM, 32 KB internal reserved), as in the native variant | **no reboots, no dropouts** (confirmed by the user): 11 min of music with 0 lost sync, 0 dropped chunks, pull rate 43,914–44,435 Hz, internal heap 44–48 KB free; volume buttons and play/pause on the speaker ✔ |
+
+The native variant received the 1 MB buffer as well (it already used `CONFIG_SPIRAM_USE_MALLOC`; compiled, not yet
+tested on the device).
+
+Still open: when switching the speaker off, the SRS-XB100 once sent pause 80 s before it disconnected, so the 1 s
+confirmation window did not filter it and Music Assistant stopped.
 
 ## Quirks of the Sony SRS-XB100
 

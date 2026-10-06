@@ -69,8 +69,9 @@ CONFIG_SENDSPIN_ENABLE_METADATA=n
 CONFIG_SENDSPIN_ENABLE_COLOR=n
 CONFIG_SENDSPIN_ENABLE_ARTWORK=n
 CONFIG_SENDSPIN_ENABLE_VISUALIZER=n
-# 150 KB: 64 KB already caused occasional underruns
-CONFIG_APP_SENDSPIN_BUFFER_SIZE=150000
+# 1 MB (PSRAM): Music Assistant fills the buffer ahead of time; 150 KB overflowed with dense music (FLAC ~1 Mbit/s),
+# every dropped chunk is a 104.5 ms gap
+CONFIG_APP_SENDSPIN_BUFFER_SIZE=1000000
 
 # Diagnostics: per-task CPU load in the stats log
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y

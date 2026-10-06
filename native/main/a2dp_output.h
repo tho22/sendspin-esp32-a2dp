@@ -77,7 +77,7 @@ class A2dpOutput {
   int32_t fill_audio_(uint8_t *data, int32_t len);
 
   bool init_bluetooth_();
-  void restart_bluetooth_();
+  void restart_bluetooth_(const char *reason);
   void connect_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
   void control_loop_();

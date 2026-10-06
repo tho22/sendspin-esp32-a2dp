@@ -39,7 +39,8 @@ static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pa
 
 // AVRCP: some speakers (e.g. Sony SRS-XB100) send play and their own volume right after connecting; ignore that
 static constexpr uint32_t AVRC_CONNECT_GRACE_MS = 3000;
-static constexpr int AVRC_VOLUME_STEP = 5;  // % per volume button press without absolute volume
+static constexpr int AVRC_VOLUME_STEP = 5;
+static constexpr uint32_t PLAY_PAUSE_CONFIRM_MS = 1000;  // % per volume button press without absolute volume
 static constexpr uint8_t AVRC_TL_GET_CAPS = 0;
 static constexpr uint8_t AVRC_TL_VOLUME = 1;
 
@@ -286,7 +287,7 @@ void A2DPSourceSpeaker::loop() {
           this->rejected_connects_ = 0;
         }
         if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
-          this->restart_bluetooth_();
+          this->restart_bluetooth_("Repeated connection failures, restarting Bluetooth");
           if (this->is_failed()) {
             return;
           }
@@ -312,6 +313,12 @@ void A2DPSourceSpeaker::loop() {
           this->has_address_ = true;
           this->address_pref_.save(&this->remote_address_);
           global_preferences->sync();
+          // After an inquiry the controller kept delivering 1-4 % less than real time until the next reboot
+          // (Sendspin's buffer then overflows, whole FLAC blocks drop out); a fresh stack connects cleanly
+          this->restart_bluetooth_("Speaker found, restarting Bluetooth before connecting");
+          if (this->is_failed()) {
+            return;
+          }
           this->connect_();
         } else {
           ESP_LOGW(TAG, "'%s' not found, retrying in %" PRIu32 " s", this->device_name_.c_str(),
@@ -374,7 +381,9 @@ void A2DPSourceSpeaker::loop() {
   }
   switch (this->pending_command_.exchange(RemoteCommand::NONE)) {
     case RemoteCommand::PLAY_PAUSE:
-      this->play_pause_trigger_.trigger();
+      // The SRS-XB100 sends pause right before it powers off; only act if the speaker is still connected a moment
+      // later, so switching the speaker off does not pause Music Assistant
+      this->play_pause_due_ms_ = now + PLAY_PAUSE_CONFIRM_MS;
       break;
     case RemoteCommand::STOP:
       this->stop_trigger_.trigger();
@@ -389,6 +398,15 @@ void A2DPSourceSpeaker::loop() {
       break;
   }
 
+  if (this->play_pause_due_ms_ != 0 && static_cast<int32_t>(now - this->play_pause_due_ms_) >= 0) {
+    this->play_pause_due_ms_ = 0;
+    if (this->is_connected()) {
+      this->play_pause_trigger_.trigger();
+    } else {
+      ESP_LOGI(TAG, "Ignoring play/pause sent while the speaker disconnected (powering off)");
+    }
+  }
+
   const uint32_t underruns = this->underrun_bytes_.load();
   if (underruns > 0 && (now - this->last_underrun_log_ms_ >= UNDERRUN_LOG_INTERVAL_MS)) {
     this->last_underrun_log_ms_ = now;
@@ -398,10 +416,10 @@ void A2DPSourceSpeaker::loop() {
   }
 }
 
-void A2DPSourceSpeaker::restart_bluetooth_() {
-  // A link loss can leave a stale ACL link in the controller that the host no longer knows about; every connect then
-  // fails with "Conn Exists". Only a controller restart clears it.
-  ESP_LOGW(TAG, "%" PRIu32 " connection attempts failed, restarting Bluetooth", this->failed_connects_.load());
+void A2DPSourceSpeaker::restart_bluetooth_(const char *reason) {
+  // Clears controller state that survives reconnects: a stale ACL link the host no longer knows about (every connect
+  // then fails with "Conn Exists"), or reduced throughput after an inquiry
+  ESP_LOGW(TAG, "%s", reason);
   this->failed_connects_ = 0;
   esp_a2d_source_deinit();
   esp_avrc_tg_deinit();

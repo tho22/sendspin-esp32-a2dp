@@ -73,11 +73,16 @@ A/B tests: override values in `native/sdkconfig.test`, then `native/run_test.sh 
 Both variants, via AVRCP: play/pause on the speaker starts or pauses playback in Music Assistant, +/− change the
 volume. If the speaker supports absolute volume (e.g. SRS-XB100), it applies the volume itself and changes are
 synced with Music Assistant in both directions; otherwise the ESP applies digital volume in 5 % steps.
+Play/pause, next, previous and stop are sent to Music Assistant as Sendspin controller commands, so they also work
+while no stream is active. Play/pause is only acted on if the speaker is still connected 1 s later, because the
+SRS-XB100 sends pause right before it powers off.
 In the ESPHome variant the buttons fire triggers (`on_play_pause`, `on_next`, `on_previous`, `on_stop`,
-`on_volume`) that `sendspin-bt-wrover.yaml` connects to the media player.
+`on_volume`) that `sendspin-bt-wrover.yaml` connects to Sendspin commands and the media player volume.
 
 If the speaker is reachable but refuses the connection (e.g. because it was paired with the other variant in the
-meantime), both variants drop the old pairing after 2 attempts and pair again.
+meantime), both variants drop the old pairing after 2 attempts and pair again. After discovering a speaker by
+name, the Bluetooth stack is restarted before connecting: after an inquiry the controller otherwise delivered
+slightly less than real time until the next reboot.
 
 ## Why these settings
 
@@ -95,6 +100,7 @@ meantime), both variants drop the old pairing after 2 attempts and pair again.
 | Steady playback clock instead of pull times | Sendspin hard-syncs at 5 ms error; the stack pulls audio in irregular bursts |
 | Keep alive (stream silence) | the SRS-XB100 powers off after a while without audio |
 | Outgoing Bluetooth connections only, timeout, stack restart after 4 failed attempts | prevents half-open links ("Conn Exists") |
+| `api: reboot_timeout: 0s` (ESPHome) | ESPHome otherwise reboots every 15 min when no Home Assistant is connected |
 
 ## Diagnostics
 

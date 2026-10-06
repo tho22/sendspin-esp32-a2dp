@@ -172,10 +172,10 @@ bool A2dpOutput::init_bluetooth_() {
   return true;
 }
 
-void A2dpOutput::restart_bluetooth_() {
-  // A link loss can leave a stale ACL link in the controller; only a controller restart clears it
-  ESP_LOGW(TAG, "%u connection attempts failed, restarting Bluetooth",
-           static_cast<unsigned>(this->failed_connects_.load()));
+void A2dpOutput::restart_bluetooth_(const char *reason) {
+  // Clears controller state that survives reconnects: a stale ACL link ("Conn Exists") or reduced throughput after
+  // an inquiry
+  ESP_LOGW(TAG, "%s", reason);
   this->failed_connects_ = 0;
   esp_a2d_source_deinit();
   esp_avrc_tg_deinit();
@@ -265,7 +265,7 @@ void A2dpOutput::control_loop_() {
           this->rejected_connects_ = 0;
         }
         if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
-          this->restart_bluetooth_();
+          this->restart_bluetooth_("Repeated connection failures, restarting Bluetooth");
         }
         if (this->has_address_) {
           this->connect_();
@@ -285,6 +285,9 @@ void A2dpOutput::control_loop_() {
         if (this->device_found_.load()) {
           this->has_address_ = true;
           this->save_address_();
+          // After an inquiry the controller kept delivering 1-4 % less than real time until the next reboot
+          // (Sendspin's buffer then overflows, whole FLAC blocks drop out); a fresh stack connects cleanly
+          this->restart_bluetooth_("Speaker found, restarting Bluetooth before connecting");
           this->connect_();
         } else {
           ESP_LOGW(TAG, "'%s' not found", this->config_.device_name.c_str());

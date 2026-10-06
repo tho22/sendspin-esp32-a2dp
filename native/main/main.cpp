@@ -29,6 +29,7 @@
 static const char *const TAG = "main";
 
 static constexpr uint32_t CLIENT_LOOP_INTERVAL_MS = 5;
+static constexpr int64_t PLAY_PAUSE_CONFIRM_US = 1000000;
 static constexpr const char *NVS_NAMESPACE = "sendspin";
 
 static std::atomic<bool> g_network_ready{false};
@@ -236,12 +237,13 @@ class SendspinBridge : public sendspin::SendspinClientListener,
 
     using Cmd = sendspin::SendspinControllerCommand;
     std::optional<Cmd> cmd;
+    const int64_t now = esp_timer_get_time();
     switch (command) {
       case A2dpOutput::RemoteCommand::PLAY:
       case A2dpOutput::RemoteCommand::PAUSE:
-        // The A2DP stream runs all the time (keep alive), so the speaker cannot know whether music plays and its
-        // play/pause choice is unreliable: toggle based on whether a Sendspin stream is running
-        cmd = this->stream_active_ ? Cmd::PAUSE : Cmd::PLAY;
+        // The SRS-XB100 sends pause right before it powers off; only act if the speaker is still connected a
+        // moment later, so switching the speaker off does not pause the server
+        this->play_pause_due_us_ = now + PLAY_PAUSE_CONFIRM_US;
         break;
       case A2dpOutput::RemoteCommand::STOP:
         cmd = Cmd::STOP;
@@ -254,6 +256,16 @@ class SendspinBridge : public sendspin::SendspinClientListener,
         break;
       case A2dpOutput::RemoteCommand::NONE:
         break;
+    }
+    if (this->play_pause_due_us_ != 0 && now >= this->play_pause_due_us_) {
+      this->play_pause_due_us_ = 0;
+      if (this->output_.is_connected()) {
+        // The A2DP stream runs all the time (keep alive), so the speaker cannot know whether music plays and its
+        // play/pause choice is unreliable: toggle based on whether a Sendspin stream is running
+        cmd = this->stream_active_ ? Cmd::PAUSE : Cmd::PLAY;
+      } else {
+        ESP_LOGI(TAG, "Ignoring play/pause sent while the speaker disconnected (powering off)");
+      }
     }
     if (cmd.has_value()) {
       ESP_LOGI(TAG, "Speaker button -> server command %d", static_cast<int>(*cmd));
@@ -292,6 +304,7 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   sendspin::PlayerRole *player_{nullptr};
   sendspin::ControllerRole *controller_{nullptr};
   bool stream_active_{false};
+  int64_t play_pause_due_us_{0};  // Pending play/pause from the speaker, sent only if it is still connected
   uint8_t volume_{CONFIG_APP_INITIAL_VOLUME};
 };
 

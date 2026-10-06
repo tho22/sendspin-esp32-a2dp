@@ -98,7 +98,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   int32_t fill_audio_(uint8_t *data, int32_t len);
 
   bool init_bluetooth_();
-  void restart_bluetooth_();
+  void restart_bluetooth_(const char *reason);
   void log_task_load_();
   void connect_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
@@ -176,6 +176,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   std::atomic<bool> finishing_{false};
   bool attempted_once_{false};
   uint32_t last_attempt_ms_{0};
+  uint32_t play_pause_due_ms_{0};  // Pending play/pause, fired only if still connected (main loop)
   uint32_t connect_started_ms_{0};
   uint32_t last_media_ctrl_ms_{0};
   uint32_t last_underrun_log_ms_{0};

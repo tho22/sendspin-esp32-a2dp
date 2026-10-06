@@ -56,6 +56,8 @@ logger:
 api:
   encryption:
     key: !secret api_encryption_key
+  # Do not reboot when no Home Assistant is connected (default: every 15 min without an API client)
+  reboot_timeout: 0s
 
 ota:
   - platform: esphome
@@ -83,15 +85,15 @@ speaker:
     # Lives in internal RAM (fast access from the Bluetooth task), so keep it small
     buffer_duration: 200ms
     reconnect_interval: 15s
-    # Speaker buttons (AVRCP) go to the media player, which forwards them to Music Assistant via Sendspin
+    # Speaker buttons (AVRCP) go to Music Assistant as Sendspin commands (works without an active stream)
     on_play_pause:
-      - media_player.toggle: media_player_bt
+      - script.execute: play_pause
     on_next:
-      - media_player.next: media_player_bt
+      - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::NEXT);
     on_previous:
-      - media_player.previous: media_player_bt
+      - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::PREVIOUS);
     on_stop:
-      - media_player.stop: media_player_bt
+      - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::STOP);
     # Volume changed on the speaker (absolute volume): update the media player and thereby Music Assistant
     on_volume:
       - media_player.volume_set:
@@ -99,6 +101,7 @@ speaker:
           volume: !lambda return x;
 
 sendspin:
+  id: sendspin_hub
   # No task stacks in PSRAM: on ESP32 rev1 this crashes in Sendspin's ring buffer
   task_stack_in_psram: false
 
@@ -161,22 +164,33 @@ text_sensor:
     type: album
     name: Album
 
+script:
+  # Play/pause as a Sendspin command: media_player.toggle does nothing while no stream is active (e.g. after
+  # Music Assistant stopped), while the server can always resume
+  - id: play_pause
+    then:
+      - lambda: |-
+          id(sendspin_hub).send_client_command(
+              id(media_player_bt).state == media_player::MEDIA_PLAYER_STATE_PLAYING
+                  ? sendspin::SendspinControllerCommand::PAUSE
+                  : sendspin::SendspinControllerCommand::PLAY);
+
 button:
   - platform: template
-    name: Play/Pause
+    name: Play Pause
     icon: mdi:play-pause
     on_press:
-      - media_player.toggle: media_player_bt
+      - script.execute: play_pause
   - platform: template
     name: Next track
     icon: mdi:skip-next
     on_press:
-      - media_player.next: media_player_bt
+      - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::NEXT);
   - platform: template
     name: Previous track
     icon: mdi:skip-previous
     on_press:
-      - media_player.previous: media_player_bt
+      - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::PREVIOUS);
   # Drops the pairing and searches for the speaker by name: put the speaker into pairing mode first
   - platform: template
     name: Re-pair speaker

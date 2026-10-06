@@ -116,6 +116,31 @@ play/pause/next/previous buttons and a "Re-pair speaker" button. Flash: 1.62 of 
 | Playback with the metadata role enabled | log: 0 lost sync, 0 underruns, pull rate ≥ 44,015 Hz (1.8 min after settling); internal heap 58 KB free (min 55 KB) |
 | "Re-pair speaker" button | 1st press (speaker not in pairing mode): pairing dropped, discovery finds nothing, retries every 15 s; 2nd press with pairing mode: speaker found after 0.5 s, paired and connected 3 s after the press ✔ |
 
+## Phase 6: Fixes for re-pairing, power off and reboots (2026-10-06)
+
+Findings after the web interface test:
+
+| Observation | Cause | Fix |
+|---|---|---|
+| After "Re-pair speaker": 80–100 lost syncs and 100–146 dropped chunks per minute, each gap 104.5 ms (= one 4608-sample FLAC block), until the next reboot | after the inquiry (discovery) the A2DP stack kept pulling 1–4 % less than real time, Sendspin's buffer overflowed. Reconnects without inquiry (speaker off/on) stayed clean | restart the Bluetooth stack after a discovery, before connecting |
+| Switching the speaker off stops playback in Music Assistant | the SRS-XB100 sends pause (0x46) ~0.5 s before it disconnects | act on play/pause only if the speaker is still connected 1 s later |
+| ESP rebooted every 15 min ("No clients; rebooting") | ESPHome reboots without a connected API client (Home Assistant) | `api: reboot_timeout: 0s` |
+| Play on the speaker did nothing after Music Assistant had stopped | `media_player.toggle` needs an active source | play/pause/next/previous/stop sent as Sendspin controller commands |
+
+Verification (ESPHome variant):
+
+| Test | Result |
+|---|---|
+| Play on the speaker while stopped | 0x46 → Music Assistant playing 1 s later ✔ |
+| Pause on the speaker | 0x44 → stopped 1 s later ✔ |
+| Speaker switched off | pause arrives together with the disconnect → "Ignoring play/pause sent while the speaker disconnected" ✔, playback in Music Assistant not stopped |
+| Reconnect after power on, play | connected after 16 s, play starts playback ✔ |
+| "Re-pair speaker" | "Speaker found, restarting Bluetooth before connecting", paired and connected ✔; one minute with 51 lost syncs (pull rate 43,019 Hz), afterwards clean (44,081–44,146 Hz, 0 lost sync) — before the fix the dropouts lasted until the next reboot |
+| No reboot | no "No clients; rebooting" during the test ✔ |
+
+The native firmware received the same fixes for discovery and play/pause (compiled, not yet tested on the device;
+it has no API and therefore no reboot timeout).
+
 ## Quirks of the Sony SRS-XB100
 
 - Reports 250 ms latency via A2DP delay reporting (initial value for Sendspin's static delay).
@@ -123,6 +148,7 @@ play/pause/next/previous buttons and a "Re-pair speaker" button. Flash: 1.62 of 
   links ("Conn Exists") → the ESP accepts no incoming connections.
 - Powers off after a while without audio → keep alive (stream silence).
 - Sends play and its own volume right after connecting → ignored for 3 s.
+- Sends pause right before it powers off → play/pause is only acted on if the speaker is still connected 1 s later.
 - Only applies volume changes made with its buttons once the source echoes them back.
 - After it was paired again with another device or firmware it refuses the old key, but accepts a new pairing
   initiated by the source even without pairing mode.

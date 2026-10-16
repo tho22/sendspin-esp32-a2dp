@@ -221,6 +221,7 @@ channel 11. Native variant, 10 min of music each, same speaker:
 | Old WROVER rev1 (2026-10-06, for reference) | 0 / 0 / 0 | 43,919–44,277 Hz | 21–24 % | 46–49 % | 27 KB | clean |
 | Rev3 board, build for rev1 (PSRAM workaround on), IDF patch | 0 / 0 / 0 | 43,975–44,251 Hz | 32–33 % | 58 % | 27 KB | clean |
 | Rev3 board, build for rev3 (`CONFIG_ESP32_REV_MIN_3`, no workaround), IDF patch | 0 / 0 / 0 | 44,023–44,185 Hz | 21–22 % | 47 % | 36 KB | clean |
+| Rev3 board, build for rev3, IDF patch with **200 kbit/s** (27 frames/tick), ~2 min | 0 / 0 / 0 | 44,018–44,076 Hz | 24 % | 46 % | — | **slight crackling** |
 | Rev3 board, build for rev3, **without** IDF patch (328 kbit/s, 21 frames/tick) | 3 lost sync in the first 1.5 min, then 0 | 43,824–44,427 Hz | 13–14 % | 42–44 % | — | **small dropouts audible** |
 
 Findings:
@@ -228,6 +229,8 @@ Findings:
 - No measurable CPU gain from dropping the PSRAM workaround: the difference between the two patched runs sits almost
   entirely in the WiFi task and the Sendspin receive task (httpd), i.e. varying network traffic, not in the
   Bluetooth tasks. A repeat run would be needed to separate this. The rev3 build leaves 9 KB more internal RAM.
+- Going below 229 kbit/s does not help: at 200 kbit/s slight crackling was audible while 229 kbit/s sounded
+  clean in the same session. 229 kbit/s stays (single short listening tests, so the difference may be chance).
 - The IDF patch is still needed on revision 3: at 328 kbit/s the radio link drops audio audibly, and Bluetooth
   takes noticeably more CPU on core 0 (idle 13 % instead of 21 %).
 

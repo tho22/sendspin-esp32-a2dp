@@ -211,6 +211,26 @@ was pulled for 3 s, the ESP disconnects and reconnects right away; if the discon
 or a second stall follows within 5 min, it restarts the Bluetooth stack. Checked: no false triggers in normal
 operation; the recovery itself has not been observed yet (the stall could not be provoked).
 
+## Phase 10: ESP32 revision 3 board (2026-10-16)
+
+New board ESP32-DevKitC-VE: ESP32-D0WD-V3 **revision 3.1**, 8 MB flash, 8 MB PSRAM (4 MB mapped). WiFi back on
+channel 11. Native variant, 10 min of music each, same speaker:
+
+| Run | Lost sync / underruns / stalls | Pull rate | Core 0 idle | Core 1 idle | Internal heap free | Listening |
+|---|---|---|---|---|---|---|
+| Old WROVER rev1 (2026-10-06, for reference) | 0 / 0 / 0 | 43,919–44,277 Hz | 21–24 % | 46–49 % | 27 KB | clean |
+| Rev3 board, build for rev1 (PSRAM workaround on), IDF patch | 0 / 0 / 0 | 43,975–44,251 Hz | 32–33 % | 58 % | 27 KB | clean |
+| Rev3 board, build for rev3 (`CONFIG_ESP32_REV_MIN_3`, no workaround), IDF patch | 0 / 0 / 0 | 44,023–44,185 Hz | 21–22 % | 47 % | 36 KB | clean |
+| Rev3 board, build for rev3, **without** IDF patch (328 kbit/s, 21 frames/tick) | 3 lost sync in the first 1.5 min, then 0 | 43,824–44,427 Hz | 13–14 % | 42–44 % | — | **small dropouts audible** |
+
+Findings:
+- The rev3 board plays cleanly with the IDF patch.
+- No measurable CPU gain from dropping the PSRAM workaround: the difference between the two patched runs sits almost
+  entirely in the WiFi task and the Sendspin receive task (httpd), i.e. varying network traffic, not in the
+  Bluetooth tasks. A repeat run would be needed to separate this. The rev3 build leaves 9 KB more internal RAM.
+- The IDF patch is still needed on revision 3: at 328 kbit/s the radio link drops audio audibly, and Bluetooth
+  takes noticeably more CPU on core 0 (idle 13 % instead of 21 %).
+
 ## Quirks of the Sony SRS-XB100
 
 - Reports 250 ms latency via A2DP delay reporting (initial value for Sendspin's static delay).

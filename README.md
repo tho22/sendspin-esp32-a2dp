@@ -37,7 +37,7 @@ brings a new IDF version.
    .venv/bin/esphome run sendspin-bt-wrover.yaml --device /dev/ttyUSB0
    ```
    The ESP discovers the speaker by name (`bt_device_name`), pairs it and reconnects it automatically on every start.
-3. Play to "Sendspin BT 1" in Music Assistant. Static delay about 250 ms (initial value, reported by the speaker).
+3. Play to "Sendspin BT 1" in Music Assistant. Static delay about 250 ms (initial value, reported by the speaker). The volume starts at 10 % after a fresh flash.
 
 ### Web interface
 
@@ -63,7 +63,7 @@ Getting started:
    ```bash
    native/build.sh -p /dev/ttyUSB0 build flash
    ```
-3. Play to "Sendspin BT 1" in Music Assistant.
+3. Play to "Sendspin BT 1" in Music Assistant. The volume starts at 10 % after every boot (not stored).
 
 View the log: `.venv/bin/python native/serial_log.py /dev/ttyUSB0 600 --reset`
 A/B tests: override values in `native/sdkconfig.test`, then `native/run_test.sh NAME` (builds, flashes, logs for
@@ -115,8 +115,9 @@ All measurements and listening tests: [docs/TEST_REPORT.md](docs/TEST_REPORT.md)
 
 ## Known limitations
 
-- Tested on ESP32 rev1 (WROVER-B); the PSRAM workaround of this revision costs a lot of CPU. An ESP32 with chip
-  revision ≥ 3 (e.g. ESP32-DevKitC-VE with WROVER-E) should have more headroom.
+- Tested on ESP32 rev1 (WROVER-B) and rev3 (ESP32-DevKitC-VE, native variant only). On revision ≥ 3, building with
+  `CONFIG_ESP32_REV_MIN_3=y` (e.g. in `native/sdkconfig.test`) drops the PSRAM cache workaround and frees ~9 KB of
+  internal RAM; a CPU gain could not be measured. The IDF patch is still needed on revision 3.
 - The ESPHome variant needs more CPU on core 0 than the native one and has only been tested in short runs.
 - No OTA updates and no web interface in the native variant.
 - Switching from ESPHome to the native variant loses the native pairing: put the speaker into pairing mode once.

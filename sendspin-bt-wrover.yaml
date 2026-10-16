@@ -137,6 +137,8 @@ media_player:
   - platform: speaker_source
     id: media_player_bt
     name: Player
+    # Volume after a fresh flash (afterwards the last volume is restored); low, so a new setup does not blast
+    volume_initial: 10%
     media_pipeline:
       speaker: bt_speaker
       sources:

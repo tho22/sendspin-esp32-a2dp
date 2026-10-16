@@ -31,7 +31,7 @@ menu "Sendspin A2DP Bridge"
     config APP_INITIAL_VOLUME
         int "Initial volume (%)"
         range 0 100
-        default 50
+        default 10
 
     config APP_TEST_TONE
         bool "Diagnostic: play a 441 Hz tone while idle"

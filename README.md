@@ -47,8 +47,17 @@ brings a new IDF version.
 - **WiFi signal** (diagnostic)
 - **Title, artist, album** of the current track (Sendspin metadata role)
 - **Volume** slider and **Play/Pause**, **Next track**, **Previous track** buttons
+- **Search speakers**: searches about 13 s for audio devices ready to pair (put the speaker into pairing mode
+  first) and lists them under **Speaker**. A connected speaker is disconnected for the search and reconnected
+  afterwards. The page reloads itself when the search is done (`web/pairing.js`): the web interface reads the
+  options of a select only when loading.
+- **Speaker**: choosing a found speaker drops the old pairing and pairs the chosen one
+- **Unpair speaker**: disconnects and forgets the speaker; no connection attempts (also after a reboot) until a
+  speaker is chosen again
 - **Re-pair speaker**: drops the pairing and the stored address and searches for the speaker by name
-  (put the speaker into pairing mode first)
+  (`bt_device_name`, put the speaker into pairing mode first)
+- **Log level**: INFO after every boot (each log line costs CPU and is streamed to every open page); choose DEBUG
+  for the statistics and per-task load lines
 
 ## Native variant (`native/`)
 

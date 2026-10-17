@@ -234,6 +234,40 @@ Findings:
 - The IDF patch is still needed on revision 3: at 328 kbit/s the radio link drops audio audibly, and Bluetooth
   takes noticeably more CPU on core 0 (idle 13 % instead of 21 %).
 
+## Phase 11: Pairing from the web interface, ESPHome on the rev3 board (2026-10-17)
+
+ESPHome variant flashed on the rev3 board for the first time (build for rev1, IDF patch 229 kbit/s, 27 frames/tick).
+New: "Search speakers" button, "Speaker" select with the speakers found, "Unpair speaker" button, "Log level"
+select (INFO after boot).
+
+| Test | Result |
+|---|---|
+| Search with a JBL GO and a Sony SRS-XB100 in pairing mode | found ✔; a phone nearby is filtered out (class of device not audio/video) ✔ |
+| Choose the JBL GO, then unpair, then choose it again | paired and connected in ~4 s ✔; unpair disconnects, no reconnect ✔ |
+| Choose the Sony | paired and connected ✔ (24 s: the first connect after the Bluetooth restart fails with `ESP_ERR_INVALID_STATE`) |
+| Found speakers in the web interface | only after a page reload (the web interface reads select options when loading) → `web/pairing.js` reloads the page when the search ends ✔ |
+| Volume buttons on the JBL GO | reported value stuck at 13 %: the immediate echo from the AVRCP callback pinned the speaker's volume. Without it the steps 6 → 0 → 6 → 13 → 20 % reach the media player ✔. The echo now only goes through `on_volume` → media player. **Not yet re-tested on the Sony**, which needs the echo |
+| JBL GO, ~25 min of music | 9 stream stalls (watchdog), pull rate partly 30–44 kHz; one cause found: choosing a speaker right after a search by name connected without the Bluetooth restart that an inquiry needs → fixed. Stalls also occur without a preceding inquiry |
+| Sony XB100, ~70 min of music, same build | 0 stalls, 0 underruns, 0 lost sync, pull rate 43,523–44,604 Hz → the stalls are specific to the JBL GO |
+| Listening, Sony | **short dropouts**, nothing in the log |
+| Same, browser closed and log level ERROR | dropouts remain |
+| Same, compiled for speed (`-O2`) and `post_connect_roaming: false` | dropouts remain (flash 98 % full → `-O2` reverted, roaming stays off) |
+| Native build of 2026-10-16 that played cleanly then, same board, same speaker | **dropouts as well** |
+
+Findings:
+- The dropouts are not caused by ESPHome or by the pairing changes: the native build that was clean on 2026-10-16
+  (21:00, WiFi channel 11, RSSI -66 dBm) drops out today as well (13:00, channel 11, RSSI -68 dBm). Most likely
+  the 2.4 GHz band is busier during the day; losses on the Bluetooth link show in no log. Not verified.
+- Core 0 idle with ESPHome on the rev3 board: 7–12 % (native: 21–29 %); the Bluetooth controller takes 16 % instead
+  of 11–12 % with identical Bluetooth settings.
+- After a Bluetooth restart the first connect fails with `ESP_ERR_INVALID_STATE`; it is now retried after 1 s
+  instead of the 15 s reconnect interval.
+
+## Quirks of the JBL GO
+
+- Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.
+- Frequent stream stalls (the stack stops pulling audio for 3 s) with the same build that runs cleanly with the Sony.
+
 ## Quirks of the Sony SRS-XB100
 
 - Reports 250 ms latency via A2DP delay reporting (initial value for Sendspin's static delay).

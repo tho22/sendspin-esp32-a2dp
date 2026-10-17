@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <esp_a2dp_api.h>
 #include <esp_avrc_api.h>
@@ -18,6 +19,8 @@
 #include "esphome/core/preferences.h"
 
 namespace esphome::a2dp_source {
+
+class A2DPDeviceSelect;
 
 enum class LinkState : uint8_t {
   IDLE = 0,     // Not connected, waiting for the next connection attempt
@@ -53,6 +56,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   void set_reconnect_interval(uint32_t ms) { this->reconnect_interval_ms_ = ms; }
   void set_keep_alive(bool keep_alive) { this->keep_alive_ = keep_alive; }
   void set_test_tone(bool test_tone) { this->test_tone_ = test_tone; }
+  void set_device_select(A2DPDeviceSelect *device_select) { this->device_select_ = device_select; }
 
   // Speaker interface
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) override;
@@ -71,6 +75,13 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   const std::string &get_status_text() const { return this->status_text_; }
   /// Drops the pairing and the stored address and searches for the speaker by name (main loop only)
   void repair();
+  /// Searches for speakers ready to pair (disconnects the current one for the search); the result goes to the device
+  /// select (main loop only)
+  void scan();
+  /// Pairs the speaker at `index` of the last scan result, dropping the old pairing (main loop only)
+  void pair_found_device(size_t index);
+  /// Disconnects, forgets the speaker and stops connecting until the next pairing (main loop only)
+  void unpair();
 
   // Speaker buttons (AVRCP), fired from the main loop
   Trigger<> *get_play_pause_trigger() { return &this->play_pause_trigger_; }
@@ -102,6 +113,10 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   void recover_from_stall_(const char *reason);
   void log_task_load_();
   void connect_();
+  bool start_discovery_();
+  void finish_scan_();
+  void forget_speaker_();
+  void enable_pairing_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
   void apply_software_volume_(uint8_t *data, size_t length);
   void drain_ring_buffer_();
@@ -111,9 +126,25 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   std::unique_ptr<ring_buffer::RingBuffer> ring_buffer_;
 
   esp_bd_addr_t remote_address_{};
+  esp_bd_addr_t connected_address_{};       // Peer of the current link (BTC task, published by link_state_)
+  std::atomic<bool> address_chosen_{false};  // remote_address_ chosen in the web interface, do not adopt another peer
   bool has_address_{false};
   bool address_configured_{false};  // From YAML; a discovered address is persisted in address_pref_ instead
   ESPPreferenceObject address_pref_;
+  bool pairing_enabled_{true};  // false after unpair(): no discovery, no connects
+  ESPPreferenceObject pairing_enabled_pref_;
+  bool forget_pending_{false};  // unpair(): drop the bonds once the link is down
+  uint32_t leave_link_ms_{0};   // Disconnect requested for unpair()/scan(), 0 = none
+  bool scan_requested_{false};
+  std::atomic<bool> scan_only_{false};  // The running discovery collects speakers instead of pairing by name
+
+  struct FoundDevice {
+    esp_bd_addr_t address;
+    std::string name;
+  };
+  std::vector<FoundDevice> scan_devices_;   // Written by the BTC task during a scan, guarded by remote_name_mutex_
+  std::vector<FoundDevice> found_devices_;  // Result of the last scan, offered by device_select_ (main loop)
+  A2DPDeviceSelect *device_select_{nullptr};
   std::string status_text_;
   std::string remote_name_;  // Written by the BTC task
   std::mutex remote_name_mutex_;

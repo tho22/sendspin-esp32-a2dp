@@ -62,7 +62,10 @@ psram:
   speed: 40MHz
 
 logger:
+  # DEBUG is compiled in, but only INFO is active after boot: every log line costs CPU, and the web interface
+  # streams it to each open page. Enable DEBUG explicitly with "Log level" (back to INFO after a reboot).
   level: DEBUG
+  initial_level: INFO
 
 api:
   encryption:
@@ -82,6 +85,8 @@ wifi:
   # Modem sleep outside streaming; while streaming Sendspin turns it off for an accurate clock sync
   # ("high performance")
   power_save_mode: light
+  # No background scans for a better access point: a scan takes the shared radio off the channel
+  post_connect_roaming: false
 
 external_components:
   - source:
@@ -163,10 +168,12 @@ sensor:
     entity_category: diagnostic
     update_interval: 30s
 
-# Web interface: http://sendspin-bt-1.local (status, track info, controls, re-pairing)
+# Web interface: http://sendspin-bt-1.local (status, track info, controls, pairing)
 web_server:
   port: 80
   version: 3
+  # Reloads the page after "Search speakers", so the found speakers show up under "Speaker"
+  js_include: web/pairing.js
 
 text_sensor:
   - platform: template
@@ -212,6 +219,21 @@ button:
     icon: mdi:skip-previous
     on_press:
       - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::PREVIOUS);
+  # Lists the speakers ready to pair under "Speaker" (the page reloads itself afterwards); disconnects the current
+  # speaker for the ~13 s search
+  - platform: template
+    name: Search speakers
+    icon: mdi:bluetooth-audio
+    entity_category: config
+    on_press:
+      - lambda: id(bt_speaker).scan();
+  # Disconnects and forgets the speaker; no connection attempts (also after a reboot) until a speaker is chosen
+  - platform: template
+    name: Unpair speaker
+    icon: mdi:bluetooth-off
+    entity_category: config
+    on_press:
+      - lambda: id(bt_speaker).unpair();
   # Drops the pairing and searches for the speaker by name: put the speaker into pairing mode first
   - platform: template
     name: Re-pair speaker
@@ -219,6 +241,13 @@ button:
     entity_category: config
     on_press:
       - lambda: id(bt_speaker).repair();
+
+select:
+  - platform: logger
+    name: Log level
+  # Speakers found by "Search speakers"; choosing one drops the old pairing and pairs it
+  - platform: a2dp_source
+    name: Speaker
 
 number:
   - platform: template

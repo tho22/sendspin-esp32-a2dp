@@ -27,6 +27,10 @@ static constexpr uint32_t STALL_REPEAT_WINDOW_MS = 300000;     // Another stall 
 static constexpr uint8_t DISCOVERY_DURATION = 10;   // x 1.28 s
 static constexpr size_t MAX_FOUND_DEVICES = 10;
 static constexpr uint32_t CONNECT_RETRY_MS = 1000;  // After a connect the stack refused to start
+// After losing a connection the speaker is usually back within seconds (e.g. a short radio dropout): retry quickly
+// a few times before falling back to the reconnect interval
+static constexpr uint32_t QUICK_RECONNECT_MS = 3000;
+static constexpr uint8_t QUICK_RECONNECTS = 3;
 static constexpr uint32_t DISCARD_CHUNK_MS = 20;    // Granularity of real-time discarding while disconnected
 
 // Sendspin hard-syncs at 5 ms error, so the reported playback clock must be steady (see fill_audio_())
@@ -314,9 +318,12 @@ void A2dpOutput::control_loop_() {
         this->stall_disconnect_ms_ = 0;
         this->attempted_once_ = false;
       }
-      if (!this->attempted_once_ || now - this->last_attempt_ms_ >= this->config_.reconnect_interval_ms) {
+      if (!this->attempted_once_ || now - this->last_attempt_ms_ >= this->reconnect_interval_()) {
         this->attempted_once_ = true;
         this->last_attempt_ms_ = now;
+        if (this->quick_reconnects_.load() > 0) {
+          this->quick_reconnects_--;
+        }
         if (this->rejected_connects_.load() >= MAX_REJECTED_CONNECTS) {
           // The speaker answers but refuses the A2DP channel, typically because it no longer knows our link key
           // (it was paired again with another firmware or device). Drop the stale pairing so the next connect pairs
@@ -629,6 +636,10 @@ void A2dpOutput::finish_scan_() {
   this->link_state_ = LinkState::IDLE;
 }
 
+uint32_t A2dpOutput::reconnect_interval_() const {
+  return this->quick_reconnects_.load() > 0 ? QUICK_RECONNECT_MS : this->config_.reconnect_interval_ms;
+}
+
 void A2dpOutput::connect_() {
   char addr[18];
   format_bda(this->remote_address_, addr);
@@ -641,7 +652,7 @@ void A2dpOutput::connect_() {
     // Right after a stack restart the profile is not ready yet (ESP_ERR_INVALID_STATE): retry after a second
     // instead of the full reconnect interval
     ESP_LOGW(TAG, "Connect failed: %s, retrying", esp_err_to_name(err));
-    this->last_attempt_ms_ = now_ms() - this->config_.reconnect_interval_ms + CONNECT_RETRY_MS;
+    this->last_attempt_ms_ = now_ms() - this->reconnect_interval_() + CONNECT_RETRY_MS;
     this->link_state_ = LinkState::IDLE;
   }
 }
@@ -1242,6 +1253,7 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
         esp_bt_gap_read_remote_name(param->conn_stat.remote_bda);
         this->failed_connects_ = 0;
         this->rejected_connects_ = 0;
+        this->quick_reconnects_ = 0;
         memcpy(this->connected_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
         if (memcmp(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN) == 0) {
           this->address_chosen_ = false;
@@ -1255,6 +1267,9 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
         this->link_state_ = LinkState::CONNECTED;
       } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
         ESP_LOGW(TAG, "Disconnected from %s", addr);
+        if (this->link_state_.load() == LinkState::CONNECTED) {
+          this->quick_reconnects_ = QUICK_RECONNECTS;
+        }
         if (this->link_state_.load() == LinkState::CONNECTING) {
           if (this->acl_up_.load()) {
             this->rejected_connects_++;

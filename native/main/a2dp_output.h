@@ -98,6 +98,8 @@ class A2dpOutput {
   void restart_bluetooth_(const char *reason);
   void recover_from_stall_(const char *reason);
   void connect_();
+  // Quick retries right after a lost connection, otherwise the configured interval
+  uint32_t reconnect_interval_() const;
   bool start_discovery_();
   void finish_scan_();
   void handle_requests_();
@@ -181,6 +183,7 @@ class A2dpOutput {
   // Control task state
   bool attempted_once_{false};
   uint32_t last_attempt_ms_{0};
+  std::atomic<uint8_t> quick_reconnects_{0};  // Quick retries left after a lost connection (set by the BTC task)
   uint32_t connect_started_ms_{0};
   uint32_t last_media_ctrl_ms_{0};
   std::atomic<uint32_t> last_pull_ms_{0};  // Last data callback (BTC task), for the stream watchdog

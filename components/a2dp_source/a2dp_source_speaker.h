@@ -113,6 +113,8 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   void recover_from_stall_(const char *reason);
   void log_task_load_();
   void connect_();
+  // Quick retries right after a lost connection, otherwise the configured interval
+  uint32_t reconnect_interval_() const;
   bool start_discovery_();
   void finish_scan_();
   void forget_speaker_();
@@ -208,6 +210,7 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   std::atomic<bool> finishing_{false};
   bool attempted_once_{false};
   uint32_t last_attempt_ms_{0};
+  std::atomic<uint8_t> quick_reconnects_{0};  // Quick retries left after a lost connection (set by the BTC task)
   uint32_t play_pause_due_ms_{0};  // Pending play/pause, fired only if still connected (main loop)
   uint32_t connect_started_ms_{0};
   uint32_t last_media_ctrl_ms_{0};

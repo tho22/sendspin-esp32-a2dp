@@ -29,7 +29,7 @@ menu "Sendspin A2DP Bridge"
         default 250
 
     config APP_INITIAL_VOLUME
-        int "Initial volume (%)"
+        int "Volume after the first flash (%); afterwards the last volume is restored"
         range 0 100
         default 10
 

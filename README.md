@@ -12,7 +12,7 @@ There are two variants:
 | Variant | Location | Status |
 |---|---|---|
 | ESPHome | `sendspin-bt-wrover.yaml`, `components/a2dp_source/` | plays without audible dropouts, speaker buttons, web interface |
-| Native ESP-IDF 5.5 | `native/` | plays without audible dropouts, speaker buttons, no web interface, more CPU headroom |
+| Native ESP-IDF 5.5 | `native/` | plays without audible dropouts, speaker buttons, web interface, more CPU headroom |
 
 Only the original ESP32 has Bluetooth Classic; ESP32-S3/C3/C6 do **not** work.
 
@@ -63,6 +63,11 @@ brings a new IDF version.
 
 - `main/a2dp_output.*`: A2DP source (connection, playback clock, keep alive, statistics, AVRCP)
 - `main/main.cpp`: WiFi, mDNS (`_sendspin._tcp`), NVS, Sendspin client with player and controller roles
+- `main/web_ui.*`: web interface on port 80 (`http://sendspin-bt-1.local`), the counterpart of the ESPHome one:
+  title/artist/album, play/pause, next, previous, volume, Bluetooth status, **Search speakers** (the list of found
+  speakers updates itself), **Pair** a found speaker, **Unpair speaker**, **Re-pair speaker** (by name), WiFi
+  signal, free internal RAM, log level (INFO after boot; DEBUG only for the application's own tags) and the log
+  (only captured while "Show log" is on)
 - `sdkconfig.defaults`: complete configuration with rationale, `main/Kconfig.projbuild`: options
 
 Getting started:
@@ -72,7 +77,8 @@ Getting started:
    ```bash
    native/build.sh -p /dev/ttyUSB0 build flash
    ```
-3. Play to "Sendspin BT 1" in Music Assistant. The volume starts at 10 % after every boot (not stored).
+3. Play to "Sendspin BT 1" in Music Assistant. The volume starts at 10 % after the first flash; afterwards the last
+   volume is restored (stored 5 s after the last change).
 
 View the log: `.venv/bin/python native/serial_log.py /dev/ttyUSB0 600 --reset`
 A/B tests: override values in `native/sdkconfig.test`, then `native/run_test.sh NAME` (builds, flashes, logs for
@@ -128,7 +134,7 @@ All measurements and listening tests: [docs/TEST_REPORT.md](docs/TEST_REPORT.md)
   `CONFIG_ESP32_REV_MIN_3=y` (e.g. in `native/sdkconfig.test`) drops the PSRAM cache workaround and frees ~9 KB of
   internal RAM; a CPU gain could not be measured. The IDF patch is still needed on revision 3.
 - The ESPHome variant needs more CPU on core 0 than the native one and has only been tested in short runs.
-- No OTA updates and no web interface in the native variant.
+- No OTA updates in the native variant.
 - Switching from ESPHome to the native variant loses the native pairing: put the speaker into pairing mode once.
 - Switching between the variants: the speaker's own volume (absolute volume) carries over; a speaker turned down
   in one variant stays quiet in the other.

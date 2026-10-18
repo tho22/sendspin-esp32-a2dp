@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 #include <esp_event.h>
@@ -22,14 +23,17 @@
 #include <sendspin/client.h>
 #include <sendspin/config.h>
 #include <sendspin/controller_role.h>
+#include <sendspin/metadata_role.h>
 #include <sendspin/player_role.h>
 
 #include "a2dp_output.h"
+#include "web_ui.h"
 
 static const char *const TAG = "main";
 
 static constexpr uint32_t CLIENT_LOOP_INTERVAL_MS = 5;
 static constexpr int64_t PLAY_PAUSE_CONFIRM_US = 1000000;
+static constexpr int64_t VOLUME_SAVE_DELAY_US = 5000000;  // Store the volume once it has settled (flash wear)
 static constexpr const char *NVS_NAMESPACE = "sendspin";
 
 static std::atomic<bool> g_network_ready{false};
@@ -91,9 +95,17 @@ static void mdns_start() {
 class SendspinBridge : public sendspin::SendspinClientListener,
                        public sendspin::SendspinNetworkProvider,
                        public sendspin::SendspinPersistenceProvider,
-                       public sendspin::PlayerRoleListener {
+                       public sendspin::PlayerRoleListener,
+                       public sendspin::MetadataRoleListener,
+                       public WebUiPlayer {
  public:
   bool begin() {
+    // Last volume, like the ESPHome variant restores it after a reboot
+    uint32_t saved_volume;
+    if (nvs_get("volume", saved_volume) && saved_volume <= 100) {
+      this->volume_ = static_cast<uint8_t>(saved_volume);
+    }
+
     A2dpOutput::Config out_cfg;
     out_cfg.local_name = CONFIG_APP_FRIENDLY_NAME;
     out_cfg.device_name = CONFIG_APP_BT_DEVICE_NAME;
@@ -144,6 +156,9 @@ class SendspinBridge : public sendspin::SendspinClientListener,
 
     // Controller role: forwards the speaker's play/pause/next/previous buttons to the server
     this->controller_ = &this->client_->add_controller();
+    // Metadata role: title, artist and album for the web interface
+    this->metadata_ = &this->client_->add_metadata();
+    this->metadata_->set_listener(this);
 
     if (!this->client_->start_server()) {
       ESP_LOGE(TAG, "Failed to start Sendspin server");
@@ -152,10 +167,29 @@ class SendspinBridge : public sendspin::SendspinClientListener,
     return true;
   }
 
+  A2dpOutput *output() { return &this->output_; }
+
   void loop() {
     this->client_->loop();
     this->handle_speaker_controls_();
+    this->save_volume_();
   }
+
+  // --- WebUiPlayer (web server task) ---
+  State get_state() override {
+    State state;
+    {
+      std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+      state.title = this->title_;
+      state.artist = this->artist_;
+      state.album = this->album_;
+    }
+    state.volume = this->volume_.load();
+    state.playing = this->stream_active_.load();
+    return state;
+  }
+  void request_volume(uint8_t volume) override { this->web_volume_ = volume; }
+  void request_command(Command command) override { this->web_command_ = command; }
 
  protected:
   // --- SendspinClientListener (client loop thread) ---
@@ -178,6 +212,26 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   void on_release_high_performance() override {
     ESP_LOGI(TAG, "WiFi power save on");
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  }
+
+  // --- MetadataRoleListener (client loop thread) ---
+  void on_metadata(const sendspin::ServerMetadataStateObject &metadata) override {
+    std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+    if (metadata.title.has_value()) {
+      this->title_ = *metadata.title;
+    }
+    if (metadata.artist.has_value()) {
+      this->artist_ = *metadata.artist;
+    }
+    if (metadata.album.has_value()) {
+      this->album_ = *metadata.album;
+    }
+  }
+  void on_metadata_clear() override {
+    std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+    this->title_.clear();
+    this->artist_.clear();
+    this->album_.clear();
   }
 
   // --- SendspinNetworkProvider ---
@@ -218,9 +272,21 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   }
   void on_volume_changed(uint8_t volume) override {
     ESP_LOGI(TAG, "Volume set to %u%% by the server", volume);
+    this->set_volume_(volume);
+  }
+
+  // THREAD CONTEXT: client loop
+  void set_volume_(uint8_t volume) {
     this->volume_ = volume;
     this->output_.set_volume(volume);
     this->player_->update_volume(volume);
+    this->volume_changed_us_ = esp_timer_get_time();
+  }
+  void save_volume_() {
+    if (this->volume_changed_us_ != 0 && esp_timer_get_time() - this->volume_changed_us_ >= VOLUME_SAVE_DELAY_US) {
+      this->volume_changed_us_ = 0;
+      nvs_set("volume", this->volume_.load());
+    }
   }
 
   // THREAD CONTEXT: client loop (the controller and player roles must be used from here)
@@ -229,15 +295,33 @@ class SendspinBridge : public sendspin::SendspinClientListener,
     int volume;
     this->output_.poll_remote(command, volume);
 
-    if (volume >= 0 && volume != this->volume_) {
-      // Changed with the speaker's buttons: report it as the player volume so the server shows and keeps it
-      this->volume_ = static_cast<uint8_t>(volume);
-      this->player_->update_volume(this->volume_);
+    if (volume >= 0 && volume != this->volume_.load()) {
+      // Changed with the speaker's buttons: report it as the player volume so the server shows and keeps it, and
+      // set it back on the speaker (some speakers, e.g. the Sony SRS-XB100, only apply it once the source sets it)
+      this->set_volume_(static_cast<uint8_t>(volume));
+    }
+    const int web_volume = this->web_volume_.exchange(-1);
+    if (web_volume >= 0) {
+      ESP_LOGI(TAG, "Volume set to %d%% in the web interface", web_volume);
+      this->set_volume_(static_cast<uint8_t>(web_volume));
     }
 
     using Cmd = sendspin::SendspinControllerCommand;
     std::optional<Cmd> cmd;
     const int64_t now = esp_timer_get_time();
+    switch (this->web_command_.exchange(Command::NONE)) {
+      case Command::PLAY_PAUSE:
+        cmd = this->stream_active_.load() ? Cmd::PAUSE : Cmd::PLAY;
+        break;
+      case Command::NEXT:
+        cmd = Cmd::NEXT;
+        break;
+      case Command::PREVIOUS:
+        cmd = Cmd::PREVIOUS;
+        break;
+      case Command::NONE:
+        break;
+    }
     switch (command) {
       case A2dpOutput::RemoteCommand::PLAY:
       case A2dpOutput::RemoteCommand::PAUSE:
@@ -303,9 +387,19 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   std::unique_ptr<sendspin::SendspinClient> client_;
   sendspin::PlayerRole *player_{nullptr};
   sendspin::ControllerRole *controller_{nullptr};
-  bool stream_active_{false};
+  sendspin::MetadataRole *metadata_{nullptr};
+  std::atomic<bool> stream_active_{false};
   int64_t play_pause_due_us_{0};  // Pending play/pause from the speaker, sent only if it is still connected
-  uint8_t volume_{CONFIG_APP_INITIAL_VOLUME};
+  std::atomic<uint8_t> volume_{CONFIG_APP_INITIAL_VOLUME};
+  int64_t volume_changed_us_{0};  // Volume not yet stored, 0 = stored
+
+  // Web interface: requests (web server task -> client loop) and track info (client loop -> web server task)
+  std::atomic<int> web_volume_{-1};
+  std::atomic<Command> web_command_{Command::NONE};
+  std::mutex metadata_mutex_;
+  std::string title_;
+  std::string artist_;
+  std::string album_;
 };
 
 extern "C" void app_main() {
@@ -332,6 +426,7 @@ extern "C" void app_main() {
     vTaskDelay(pdMS_TO_TICKS(10000));
     esp_restart();
   }
+  web_ui_start(bridge.output(), &bridge);
 
   // The client's callbacks and lifecycle run from this loop (core 1, see sdkconfig)
   while (true) {

@@ -263,6 +263,25 @@ Findings:
 - After a Bluetooth restart the first connect fails with `ESP_ERR_INVALID_STATE`; it is now retried after 1 s
   instead of the 15 s reconnect interval.
 
+## Phase 12: Native variant brought to feature parity (2026-10-17/18)
+
+Both variants are to keep the same feature set. The native variant got the Bluetooth changes of phase 11 (search
+with audio device filter, pairing a found speaker with a Bluetooth restart first, unpair persisted, re-pair by
+name, quick retry after `ESP_ERR_INVALID_STATE`, no immediate volume echo) and its own web interface on port 80
+(`main/web_ui.*`): track info (Sendspin metadata role), play/pause/next/previous, volume, Bluetooth status and
+pairing, WiFi signal, free internal RAM, log level, log. The volume is now stored like in ESPHome. Rev3 board, Sony
+SRS-XB100.
+
+| Test | Result |
+|---|---|
+| Web server next to Sendspin's httpd | first start: Sendspin failed (`error in creating ctrl socket`), because the web interface took control port 32769, which Sendspin uses to make room for a web server → web interface on the default port, both run ✔ |
+| Search via the web interface | runs, Bluetooth restart afterwards ✔ |
+| Status: title/artist/album, volume, RSSI, free RAM | ✔ |
+| Log level DEBUG for all tags | floods the log with httpd per-packet lines, followed by `BT_L2CAP: l2cab is_cong_cback_context` → DEBUG only for the application's tags (`a2dp`, `main`, `web_ui`), libraries stay at INFO ✔ |
+| Playback buttons, volume slider (also following the speaker's buttons), search and pair from the page | ✔ (confirmed by the user) |
+| Free internal RAM | ~36–41 KB → 26–28 KB (min 25 KB) with the web server; about the old WROVER's level. Task stack in PSRAM rejected (risky on rev1) |
+| Long run | ~20 h without crash; pull rate 44,302 Hz at the end |
+
 ## Quirks of the JBL GO
 
 - Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.

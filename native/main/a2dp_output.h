@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include <esp_a2dp_api.h>
 #include <esp_avrc_api.h>
@@ -57,6 +59,22 @@ class A2dpOutput {
 
   bool is_connected() const { return this->link_state_.load() == LinkState::CONNECTED; }
 
+  // Pairing from the web interface. The requests are thread-safe; the control task carries them out.
+  /// Searches for speakers ready to pair (disconnects the current one for the search)
+  void request_scan() { this->scan_request_ = true; }
+  /// Pairs the speaker at @p index of the last search result, dropping the old pairing
+  void request_pair(size_t index) { this->pair_request_ = static_cast<int>(index); }
+  /// Disconnects, forgets the speaker and stops connecting until the next pairing
+  void request_unpair() { this->unpair_request_ = true; }
+  /// Drops the pairing and searches for Config::device_name
+  void request_repair() { this->repair_request_ = true; }
+
+  /// Human readable link/pairing state
+  std::string get_status_text();
+  /// Speakers found by the last search, as "Name (address)"
+  std::vector<std::string> get_found_devices();
+  bool is_searching() const { return this->scan_only_.load() || this->scan_request_.load(); }
+
  protected:
   enum class LinkState : uint8_t { IDLE, DISCOVERING, CONNECTING, CONNECTED };
   enum class MediaState : uint8_t { SUSPENDED, STARTING, STARTED, SUSPENDING };
@@ -80,6 +98,16 @@ class A2dpOutput {
   void restart_bluetooth_(const char *reason);
   void recover_from_stall_(const char *reason);
   void connect_();
+  bool start_discovery_();
+  void finish_scan_();
+  void handle_requests_();
+  void scan_();
+  void pair_found_device_(size_t index);
+  void unpair_();
+  void repair_();
+  void forget_speaker_();
+  void set_pairing_enabled_(bool enabled);
+  void update_status_text_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
   void control_loop_();
   void log_stats_(uint32_t elapsed_ms);
@@ -89,6 +117,7 @@ class A2dpOutput {
   size_t write_(const uint8_t *data, size_t length, TickType_t timeout);
   void apply_volume_(uint8_t *data, size_t length);
   void save_address_();
+  void clear_address_();
   bool load_address_();
 
   static A2dpOutput *instance_;
@@ -99,7 +128,30 @@ class A2dpOutput {
   size_t ring_buffer_size_{0};
 
   esp_bd_addr_t remote_address_{};
+  esp_bd_addr_t connected_address_{};       // Peer of the current link (BTC task, published by link_state_)
+  std::atomic<bool> address_chosen_{false};  // remote_address_ chosen in the web interface, do not adopt another peer
   bool has_address_{false};
+
+  // Pairing (control task, except where noted)
+  bool pairing_enabled_{true};  // false after an unpair: no discovery, no connects (persisted)
+  bool forget_pending_{false};  // Unpair: drop the bonds once the link is down
+  uint32_t leave_link_ms_{0};   // Disconnect requested for an unpair/search, 0 = none
+  bool scan_requested_{false};
+  std::atomic<bool> scan_only_{false};  // The running discovery collects speakers instead of pairing by name
+  std::atomic<bool> scan_request_{false};
+  std::atomic<int> pair_request_{-1};
+  std::atomic<bool> unpair_request_{false};
+  std::atomic<bool> repair_request_{false};
+
+  struct FoundDevice {
+    esp_bd_addr_t address;
+    std::string name;
+  };
+  std::mutex mutex_;  // Guards the members below (BTC task, control task, web server)
+  std::vector<FoundDevice> scan_devices_;   // Collected by the BTC task during a search
+  std::vector<FoundDevice> found_devices_;  // Result of the last search
+  std::string remote_name_;
+  std::string status_text_;
 
   std::atomic<LinkState> link_state_{LinkState::IDLE};
   std::atomic<MediaState> media_state_{MediaState::SUSPENDED};

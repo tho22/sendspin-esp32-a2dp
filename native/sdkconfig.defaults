@@ -57,15 +57,15 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=8192
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 
-# Sendspin websocket server
+# Sendspin websocket server and the web interface (port 80, up to 3 connections)
 CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
-CONFIG_LWIP_MAX_SOCKETS=12
+CONFIG_LWIP_MAX_SOCKETS=16
 
-# Player role, plus the controller role for the speaker's buttons
+# Player role, the controller role for the speaker's buttons and the metadata role (track info in the web interface)
 CONFIG_SENDSPIN_ENABLE_PLAYER=y
 CONFIG_SENDSPIN_ENABLE_CONTROLLER=y
-CONFIG_SENDSPIN_ENABLE_METADATA=n
+CONFIG_SENDSPIN_ENABLE_METADATA=y
 CONFIG_SENDSPIN_ENABLE_COLOR=n
 CONFIG_SENDSPIN_ENABLE_ARTWORK=n
 CONFIG_SENDSPIN_ENABLE_VISUALIZER=n
@@ -79,3 +79,5 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# DEBUG is compiled in, but only INFO is active after boot; the web interface switches the level at runtime
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

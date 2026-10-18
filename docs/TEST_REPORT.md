@@ -282,10 +282,42 @@ SRS-XB100.
 | Free internal RAM | ~36–41 KB → 26–28 KB (min 25 KB) with the web server; about the old WROVER's level. Task stack in PSRAM rejected (risky on rev1) |
 | Long run | ~20 h without crash; pull rate 44,302 Hz at the end |
 
+## Phase 13: JBL GO stream stalls caused by WiFi/Bluetooth coexistence (2026-10-18)
+
+Native variant, rev3 board, JBL GO. The stream watchdog (phase 9) fired every 2.5–6 min, while playing and
+while idle (keep alive silence). Each time the same pattern: L2CAP congestion (the speaker stops acknowledging),
+no audio pulled for 3 s, then HCI disconnect reason 0x08 (connection timeout, not the local 0x16), so the speaker
+really stopped answering on the air. It answered the next page right away; the watchdog reconnected within
+2–4 s (a second stall within 5 min restarts the Bluetooth stack, 4–6 s). Once a page timed out and the next
+attempt only came after the 15 s reconnect interval (~25 s of silence).
+
+| Test (JBL idle unless noted) | Stalls |
+|---|---|
+| Normal build (IDF patch 229 kbit/s, 27 frames/tick), long uptime | every 2.5–6 min, also during playback |
+| Speaker 10 cm from the board, right after a power-on reset | first after 3 min, same pattern |
+| Without IDF patch (328 kbit/s, 21 frames/tick) | after 6 min, then 2.5 min and 0.5 min |
+| **WiFi stopped** 30 s after connecting (`esp_wifi_stop`) | **none in 23.5 min**; callback max 26 µs instead of 1–5 ms |
+| `esp_coex_preference_set(ESP_COEX_PREFER_BT)` | worse: 2 within 3 min |
+| `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` | first after 12.5 min, the next 24 s later |
+
+Findings:
+
+- The trigger is the ESP32 sharing its radio between WiFi and Bluetooth. Not distance, uptime, stack state, the
+  IDF patch or CPU load. The Sony SRS-XB100 handles the same build without stalls.
+- The stalls start evenly spread over the 10 s Sendspin time sync cycle, not during its high performance bursts,
+  so syncing less often would not help; any WiFi activity seems to be enough.
+- The coexistence preference is not a fix in either direction. The time sync error is ~2 ms right after boot and
+  settles to ~0.7 ms within 10 min in both cases (boot settling, not the preference).
+- No simple fix found; the watchdog keeps the JBL usable, the Sony is the recommended speaker. All test code was
+  removed again.
+- Side fix: the task load line printed loads of over 14000 % after a Bluetooth restart (recreated tasks reuse
+  the old address while their run time counter restarts at zero).
+
 ## Quirks of the JBL GO
 
 - Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.
-- Frequent stream stalls (the stack stops pulling audio for 3 s) with the same build that runs cleanly with the Sony.
+- Frequent stream stalls (the stack stops pulling audio for 3 s) with the same build that runs cleanly with the Sony;
+  caused by WiFi/Bluetooth coexistence on the ESP32, none with WiFi off (phase 13).
 
 ## Quirks of the Sony SRS-XB100
 

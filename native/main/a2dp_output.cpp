@@ -23,7 +23,6 @@ static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pa
 // Stream watchdog: the stack once stopped pulling audio while the link stayed up (no disconnect, no suspend)
 static constexpr uint32_t STALL_TIMEOUT_MS = 3000;             // Started stream without a pull for this long
 static constexpr uint32_t STALL_DISCONNECT_TIMEOUT_MS = 5000;  // Disconnect not confirmed: restart the stack
-static constexpr uint32_t STALL_REPEAT_WINDOW_MS = 300000;     // Another stall within this window: restart the stack
 static constexpr uint8_t DISCOVERY_DURATION = 10;   // x 1.28 s
 static constexpr size_t MAX_FOUND_DEVICES = 10;
 static constexpr uint32_t CONNECT_RETRY_MS = 1000;  // After a connect the stack refused to start
@@ -395,10 +394,10 @@ void A2dpOutput::control_loop_() {
       // Signed: the BTC task may have updated last_pull_ms_ after `now` was taken
       const auto since_pull = static_cast<int32_t>(now - this->last_pull_ms_.load());
       if (media == MediaState::STARTED && since_pull >= static_cast<int32_t>(STALL_TIMEOUT_MS)) {
-        const bool repeated = this->last_stall_ms_ != 0 && now - this->last_stall_ms_ < STALL_REPEAT_WINDOW_MS;
-        this->last_stall_ms_ = now;
-        if (repeated) {
-          this->recover_from_stall_("Bluetooth stream stalled again, restarting Bluetooth");
+        // A reconnect is enough for a sink that drops out now and then (e.g. the JBL GO, several times per hour).
+        // Only a stream that never delivered since it (re)started points to a stuck stack.
+        if (this->last_pull_ms_.load() == this->stream_started_ms_.load()) {
+          this->recover_from_stall_("Bluetooth stream never started pulling, restarting Bluetooth");
         } else {
           ESP_LOGW(TAG, "Bluetooth stream stalled (no audio pulled for %d ms), reconnecting",
                    static_cast<int>(since_pull));
@@ -1293,6 +1292,7 @@ void A2dpOutput::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t
       if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
         ESP_LOGI(TAG, "Media stream started");
         this->last_pull_ms_ = now_ms();  // Grace period for the first pull
+        this->stream_started_ms_ = this->last_pull_ms_.load();
         this->media_state_ = MediaState::STARTED;
       } else {
         ESP_LOGI(TAG, "Media stream suspended");

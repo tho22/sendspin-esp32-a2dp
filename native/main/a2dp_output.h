@@ -188,7 +188,7 @@ class A2dpOutput {
   uint32_t last_media_ctrl_ms_{0};
   std::atomic<uint32_t> last_pull_ms_{0};  // Last data callback (BTC task), for the stream watchdog
   uint32_t stall_disconnect_ms_{0};          // Disconnect requested because of a stall, 0 = none
-  uint32_t last_stall_ms_{0};
+  std::atomic<uint32_t> stream_started_ms_{0};  // last_pull_ms_ when the stream started (BTC task)
 
   // Smoothed playback clock, only touched by the data callback (BTC task)
   int64_t clock_anchor_us_{0};

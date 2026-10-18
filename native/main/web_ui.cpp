@@ -23,6 +23,8 @@ static constexpr int64_t LOG_CAPTURE_TIMEOUT_US = 10000000;
 static constexpr size_t LOG_BUFFER_SIZE = 8192;
 static constexpr size_t LOG_LINE_MAX = 256;
 static constexpr size_t LOG_RESPONSE_MAX = 6144;
+// DEBUG streamed to an open page takes enough WiFi airtime for audible Bluetooth dropouts: back to INFO after this
+static constexpr uint64_t LOG_LEVEL_RESET_US = 10ULL * 60 * 1000000;
 
 static A2dpOutput *g_output = nullptr;
 static WebUiPlayer *g_player = nullptr;
@@ -31,6 +33,7 @@ static RingbufHandle_t g_log_ring = nullptr;
 static std::atomic<int64_t> g_log_poll_us{0};
 static vprintf_like_t g_prev_vprintf = nullptr;
 static esp_log_level_t g_log_level = ESP_LOG_INFO;
+static esp_timer_handle_t g_log_level_timer = nullptr;
 // DEBUG only applies to the application's own tags; the IDF libraries stay at INFO at most (their DEBUG output,
 // e.g. httpd per packet, floods the log and costs Bluetooth airtime)
 static constexpr const char *APP_TAGS[] = {"a2dp", "main", "web_ui"};
@@ -76,6 +79,7 @@ pre{background:var(--box);padding:8px;max-height:320px;overflow:auto;font-size:.
 <option value="1">ERROR</option><option value="2">WARN</option><option value="3">INFO</option>
 <option value="4">DEBUG</option></select>
 <label><input type="checkbox" id="showlog" onchange="$('logbox').hidden=!this.checked"> Show log</label></div>
+<p class="muted">DEBUG returns to INFO after 10 min: streamed to an open page it can cause audible dropouts.</p>
 <pre id="logbox" hidden></pre>
 
 <script>
@@ -135,6 +139,21 @@ static int log_vprintf(const char *format, va_list args) {
     }
   }
   return g_prev_vprintf(format, args);
+}
+
+static void set_log_level(esp_log_level_t level) {
+  g_log_level = level;
+  esp_log_level_set("*", std::min(level, ESP_LOG_INFO));
+  for (const char *tag : APP_TAGS) {
+    esp_log_level_set(tag, level);
+  }
+  if (g_log_level_timer != nullptr) {
+    esp_timer_stop(g_log_level_timer);
+    if (level > ESP_LOG_INFO) {
+      esp_timer_start_once(g_log_level_timer, LOG_LEVEL_RESET_US);
+    }
+  }
+  ESP_LOGI(TAG, "Log level %d", static_cast<int>(level));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -253,12 +272,7 @@ static esp_err_t action_handler(httpd_req_t *req) {
     if (!query_value(req, "level", value, sizeof(value))) {
       return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "level missing");
     }
-    g_log_level = static_cast<esp_log_level_t>(std::clamp(atoi(value), 1, 4));
-    esp_log_level_set("*", std::min(g_log_level, ESP_LOG_INFO));
-    for (const char *tag : APP_TAGS) {
-      esp_log_level_set(tag, g_log_level);
-    }
-    ESP_LOGI(TAG, "Log level %d", static_cast<int>(g_log_level));
+    set_log_level(static_cast<esp_log_level_t>(std::clamp(atoi(value), 1, 4)));
   }
   return httpd_resp_send(req, nullptr, 0);
 }
@@ -267,6 +281,14 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
   g_output = output;
   g_player = player;
   g_prev_vprintf = esp_log_set_vprintf(log_vprintf);
+  const esp_timer_create_args_t timer_args = {
+      .callback = [](void *) { set_log_level(ESP_LOG_INFO); },
+      .arg = nullptr,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "log_level",
+      .skip_unhandled_events = true,
+  };
+  esp_timer_create(&timer_args, &g_log_level_timer);
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;

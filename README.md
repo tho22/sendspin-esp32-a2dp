@@ -57,7 +57,8 @@ brings a new IDF version.
 - **Re-pair speaker**: drops the pairing and the stored address and searches for the speaker by name
   (`bt_device_name`, put the speaker into pairing mode first)
 - **Log level**: INFO after every boot (each log line costs CPU and is streamed to every open page); choose DEBUG
-  for the statistics and per-task load lines
+  for the statistics and per-task load lines. DEBUG returns to INFO after 10 min: streamed to an open page it takes
+  enough WiFi airtime for audible Bluetooth dropouts
 
 ## Native variant (`native/`)
 
@@ -66,7 +67,8 @@ brings a new IDF version.
 - `main/web_ui.*`: web interface on port 80 (`http://sendspin-bt-1.local`), the counterpart of the ESPHome one:
   title/artist/album, play/pause, next, previous, volume, Bluetooth status, **Search speakers** (the list of found
   speakers updates itself), **Pair** a found speaker, **Unpair speaker**, **Re-pair speaker** (by name), WiFi
-  signal, free internal RAM, log level (INFO after boot; DEBUG only for the application's own tags) and the log
+  signal, free internal RAM, log level (INFO after boot and 10 min after choosing DEBUG; DEBUG only for the
+  application's own tags) and the log
   (only captured while "Show log" is on)
 - `sdkconfig.defaults`: complete configuration with rationale, `main/Kconfig.projbuild`: options
 

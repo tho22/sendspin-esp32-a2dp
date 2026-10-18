@@ -313,6 +313,31 @@ Findings:
 - Side fix: the task load line printed loads of over 14000 % after a Bluetooth restart (recreated tasks reuse
   the old address while their run time counter restarts at zero).
 
+## Phase 14: Faster recovery, Rapoo A300, log streaming as a dropout source (2026-10-18)
+
+Recovery after a lost connection (both variants, tested on the rev3 board with the JBL GO, ESPHome and native):
+
+| Change | Result |
+|---|---|
+| Quick reconnect: after an established connection drops, up to 3 attempts every 3 s, then the 15 s interval | speaker off/on: attempt at +3 s, page timeout, next attempt 3 s later, connected; no more ~25 s gaps |
+| Stack restart only if the disconnect is not confirmed, a restarted stream never pulls or connecting fails repeatedly (instead of on every second stall within 5 min) | JBL: 7 stalls in 21 min, all recovered with a plain reconnect, 7–9.5 s of silence (before: 7–10 s, and each restart blocked ESPHome's main loop for 2.8 s) |
+| Watchdog 2 s instead of 3 s | no gain: from the last pull to the confirmed disconnect it takes ~4 s either way (the controller waits for the speaker), the disconnect just took 2 s instead of 1–1.5 s → back to 3 s |
+
+On ESPHome the JBL GO stalls more often than on native (every ~2–6 min, clustered right after reconnects), which
+fits ESPHome's additional WiFi traffic (API, web server).
+
+New speaker Rapoo A300 (ESPHome): no stalls. Short audible dropouts while the web interface was open with the log
+at DEBUG, with a clean log (no underruns, pull rate ~44.1 kHz):
+
+| Condition | WiFi task | httpd | Callback max | Listening |
+|---|---|---|---|---|
+| Web page open, log DEBUG | 32 % | 15 % | 218–229 ms | short dropouts |
+| Page closed, log INFO | – | – | 57–97 ms (DEBUG stats right after closing) | no dropouts, no reconnects |
+
+Streaming every log line over WiFi takes enough airtime from Bluetooth for audible dropouts. Both variants now set
+the log level back to INFO 10 min after DEBUG was chosen (ESPHome: script on the logger select; native: esp_timer
+in the web interface, with a hint on the page).
+
 ## Quirks of the JBL GO
 
 - Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.
@@ -331,3 +356,8 @@ Findings:
 - After it was paired again with another device or firmware it refuses the old key, but accepts a new pairing
   initiated by the source even without pairing mode.
 - Absolute volume is the speaker's own volume; it carries over when switching firmware.
+
+## Quirks of the Rapoo A300
+
+- No stream stalls with WiFi/Bluetooth coexistence (unlike the JBL GO).
+- Audible dropouts while the web interface streams the DEBUG log (phase 14).

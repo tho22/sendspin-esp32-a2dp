@@ -63,7 +63,7 @@ psram:
 
 logger:
   # DEBUG is compiled in, but only INFO is active after boot: every log line costs CPU, and the web interface
-  # streams it to each open page. Enable DEBUG explicitly with "Log level" (back to INFO after a reboot).
+  # streams it to each open page. Enable DEBUG explicitly with "Log level" (back to INFO after 10 min or a reboot).
   level: DEBUG
   initial_level: INFO
 
@@ -202,6 +202,14 @@ script:
               id(media_player_bt).state == media_player::MEDIA_PLAYER_STATE_PLAYING
                   ? sendspin::SendspinControllerCommand::PAUSE
                   : sendspin::SendspinControllerCommand::PLAY);
+  # DEBUG streamed to an open web page takes enough WiFi airtime for audible Bluetooth dropouts: back to INFO
+  - id: log_level_reset
+    mode: restart
+    then:
+      - delay: 10min
+      - select.set:
+          id: log_level
+          option: INFO
 
 button:
   - platform: template
@@ -244,7 +252,16 @@ button:
 
 select:
   - platform: logger
+    id: log_level
     name: Log level
+    on_value:
+      - if:
+          condition:
+            lambda: return x == "DEBUG" || x == "VERBOSE" || x == "VERY_VERBOSE";
+          then:
+            - script.execute: log_level_reset
+          else:
+            - script.stop: log_level_reset
   # Speakers found by "Search speakers"; choosing one drops the old pairing and pairs it
   - platform: a2dp_source
     name: Speaker

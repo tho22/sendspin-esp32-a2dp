@@ -711,7 +711,8 @@ void A2dpOutput::log_task_load_() {
   for (size_t i = 0; i < count && total_delta > 0; i++) {
     configRUN_TIME_COUNTER_TYPE prev = 0;
     for (size_t j = 0; j < prev_count; j++) {
-      if (prev_handles[j] == tasks[i].xHandle) {
+      // A task recreated at the same address (Bluetooth restart) starts counting from zero again
+      if (prev_handles[j] == tasks[i].xHandle && prev_counters[j] <= tasks[i].ulRunTimeCounter) {
         prev = prev_counters[j];
         break;
       }

@@ -92,7 +92,46 @@ external_components:
   - source:
       type: local
       path: components
-    components: [a2dp_source]
+    # pn7160, pn7160_i2c: copies of ESPHome's components, extended to detect ISO 15693 tags (e.g. Tonies) by UID and
+    # fixed to stay in step with the NFCC's responses when a tag is read (see README)
+    components: [a2dp_source, pn7160, pn7160_i2c]
+
+# NFC reader (PN7160 via I2C): scanned tags are reported to Home Assistant as tag scans
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  # Shorter bus transactions than ESPHome's default of 50 kHz: the PN7160 polling runs in the main loop
+  frequency: 400kHz
+
+pn7160_i2c:
+  # IRQ is an input-only pin, which is fine: the PN7160 drives the line
+  irq_pin: GPIO34
+  ven_pin: GPIO25
+  # A tag counts as removed after this long unseen. With the default of 250 ms a tag left on the reader was reported
+  # as removed and placed again, and Home Assistant got a tag scan each time. With this reader most activations of a
+  # tag fail (~87 %), so a tag lying still can stay unseen for a few seconds; 2 s still let it drop out
+  tag_ttl: 5s
+  on_tag:
+    - text_sensor.template.publish:
+        id: nfc_tag
+        state: !lambda |-
+          // Tags written by the HA Companion app carry the tag ID as NDEF URL
+          static const std::string prefix = "home-assistant.io/tag/";
+          if (tag.has_ndef_message()) {
+            for (auto &record : tag.get_ndef_message()->get_records()) {
+              std::string payload = record->get_payload();
+              size_t pos = payload.find(prefix);
+              if (pos != std::string::npos)
+                return payload.substr(pos + prefix.size());
+            }
+          }
+          // Other tags (e.g. Tonies, ISO 15693): the UID, shows up in HA as a new tag
+          return x;
+    - homeassistant.tag_scanned: !lambda return id(nfc_tag).state;
+  on_tag_removed:
+    - text_sensor.template.publish:
+        id: nfc_tag
+        state: No tag
 
 speaker:
   - platform: a2dp_source
@@ -176,6 +215,12 @@ web_server:
   js_include: web/pairing.js
 
 text_sensor:
+  # Tag on the NFC reader: the HA tag ID (tags written by the Companion app) or the UID, as sent to Home Assistant
+  - platform: template
+    id: nfc_tag
+    name: NFC tag
+    icon: mdi:nfc-variant
+    update_interval: never
   - platform: template
     name: Bluetooth status
     icon: mdi:bluetooth

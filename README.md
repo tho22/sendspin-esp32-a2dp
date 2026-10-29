@@ -60,6 +60,49 @@ brings a new IDF version.
   for the statistics and per-task load lines. DEBUG returns to INFO after 10 min: streamed to an open page it takes
   enough WiFi airtime for audible Bluetooth dropouts
 
+### NFC reader (optional)
+
+A PN7160 on I2C reports scanned tags to Home Assistant as tag scans (`homeassistant.tag_scanned`). Tags written by
+the Companion app are reported with their HA tag ID (from the NDEF record), all other tags with their UID. The web
+interface shows the tag on the reader under **NFC tag** (the ID sent to Home Assistant, or "No tag").
+
+Wiring (tested with the Elechouse PN7160 MINI V1, I2C):
+
+| Module | ESP32 | Note |
+|---|---|---|
+| SDA | GPIO21 | |
+| SCL | GPIO22 | 400 kHz |
+| IRQ | GPIO34 | input only, driven by the PN7160 |
+| VEN | GPIO25 | |
+| VCC | 5V | 3.3–5.5 V; I/O stays at 3.3 V |
+| GND | GND | not CMD next to 5V: without a common ground I2C fails with random NACKs and garbage |
+
+The small antenna has a short range: the tag has to lie on it. Test_1 (an NTAG215) was only detected with the larger
+antenna of the kit.
+
+`components/pn7160/` and `components/pn7160_i2c/` are copies of ESPHome's components (2026.9.1) with these changes:
+
+- **ISO 15693** (e.g. Tonies): detected by UID; their memory (NDEF) is not read, cleaning/formatting/writing is refused
+- **Late responses are waited for, not requested again**: resending a command made the NFCC answer twice, and every
+  later response then matched the wrong command
+- **Messages around a command**: credits notifications, a tag activation or a stale response arriving before a
+  command's response are skipped instead of failing the command (a deactivation notification is kept for the state
+  machine); a data exchange accepts the credits notification and the tag data in either order
+- **IRQ still high after a read** means the next message is queued, which is no error
+- **Failed activation during discovery**: the NFCC usually activates the tag on one of its next attempts, so discovery
+  is only restarted if no activation follows within 500 ms. Stopping it right away raced with the activation: the tag
+  dropped out while it lay on the reader, and an activation arriving during the stop could hang the reader
+
+Known issues with the tested module:
+
+- Most activations fail (~87 % with both tags tested, also with 4.7 V instead of 5.0 V TX voltage), so a tag lying
+  still can stay unseen for seconds; `tag_ttl: 5s` keeps that from being reported as a new scan. Placing a tag again
+  within 5 s is not reported either
+- Twice the PN7160 stopped responding reliably after a while (no responses, discovery not starting); resets via VEN
+  and an ESP reboot did not help, only powering it off (unplugging USB). Suspected cause: the supply (5V pin of the
+  dev board behind its diode) during RF transmission. Not verified yet; next steps: 100 µF + 100 nF at the module,
+  measure VCC, separate 5 V supply
+
 ## Native variant (`native/`)
 
 - `main/a2dp_output.*`: A2DP source (connection, playback clock, keep alive, statistics, AVRCP)

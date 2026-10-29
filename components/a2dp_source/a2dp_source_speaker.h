@@ -99,29 +99,53 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   static void report_task(void *params);
   static void avrc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
   static void avrc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
-  void handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
-  void handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
-  void apply_volume_setting_();
-  void update_status_text_();
-
+  // Event handlers, BTC task
   void handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
   void handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
+  void handle_connection_state_(esp_a2d_connection_state_t state, esp_bd_addr_t remote_bda);
+  void handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
+  void handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
+  void handle_speaker_button_(uint8_t key);
+  void add_scan_device_(const uint8_t *address, const char *name);
+
+  // Audio path, data callback (BTC task)
   int32_t fill_audio_(uint8_t *data, int32_t len);
+  void advance_playback_clock_(uint32_t frames);
+  void fill_gap_(uint8_t *data, size_t length);
+  void apply_software_volume_(uint8_t *data, size_t length);
+
+  // Main loop
+  void manage_idle_link_(uint32_t now);
+  void manage_discovery_(uint32_t now);
+  void manage_connecting_link_(uint32_t now);
+  void manage_connected_link_(uint32_t now);
+  void handle_remote_commands_(uint32_t now);
+  void log_diagnostics_(uint32_t now);
+  void log_task_load_();
+  void update_status_text_();
+  void apply_volume_setting_();
+  void drain_ring_buffer_();
 
   bool init_bluetooth_();
   void restart_bluetooth_(const char *reason);
   void recover_from_stall_(const char *reason);
-  void log_task_load_();
   void connect_();
   // Quick retries right after a lost connection, otherwise the configured interval
   uint32_t reconnect_interval_() const;
   bool start_discovery_();
+  void start_scan_();
   void finish_scan_();
-  void forget_speaker_();
-  void enable_pairing_();
   void request_media_(esp_a2d_media_ctrl_t ctrl);
-  void apply_software_volume_(uint8_t *data, size_t length);
-  void drain_ring_buffer_();
+  void reset_media_state_();
+
+  // Pairing and persisted state
+  void forget_speaker_();
+  void set_pairing_enabled_(bool enabled);
+  void save_address_();
+  void clear_saved_address_();
+  void set_remote_name_(const std::string &name);
+  /// Copies the configured PIN into `pin_code` and returns its length
+  uint8_t copy_pin_code_(esp_bt_pin_code_t pin_code) const;
 
   static A2DPSourceSpeaker *instance_;
 

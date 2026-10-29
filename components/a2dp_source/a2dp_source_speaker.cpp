@@ -30,48 +30,50 @@ namespace esphome::a2dp_source {
 
 static const char *const TAG = "a2dp_source";
 
-// The legacy A2DP source data path always encodes 44.1 kHz, 16 bit, stereo PCM
+// Audio format: the legacy A2DP source data path always encodes 44.1 kHz, 16 bit, stereo PCM
 static constexpr uint32_t SAMPLE_RATE = 44100;
 static constexpr size_t BYTES_PER_FRAME = 4;
 
 // Same software volume curve as the i2s_audio speaker
 static constexpr float SOFTWARE_VOLUME_MIN_DB = -49.0f;
 
-static constexpr uint32_t MEDIA_CTRL_RETRY_MS = 1000;
-static constexpr uint32_t MAX_FAILED_CONNECTS = 4;    // Then restart the Bluetooth stack
-static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pairing and pair again
-// Stream watchdog: the stack once stopped pulling audio while the link stayed up (no disconnect, no suspend)
-static constexpr uint32_t STALL_TIMEOUT_MS = 3000;          // Started stream without a pull for this long
-static constexpr uint32_t STALL_DISCONNECT_TIMEOUT_MS = 5000;  // Disconnect not confirmed: restart the stack
-
-// AVRCP: some speakers (e.g. Sony SRS-XB100) send play and their own volume right after connecting; ignore that
-static constexpr uint32_t AVRC_CONNECT_GRACE_MS = 3000;
-static constexpr int AVRC_VOLUME_STEP = 5;
-static constexpr uint32_t PLAY_PAUSE_CONFIRM_MS = 1000;  // % per volume button press without absolute volume
-static constexpr uint8_t AVRC_TL_GET_CAPS = 0;
-static constexpr uint8_t AVRC_TL_VOLUME = 1;
-
-static uint8_t percent_to_avrc(uint8_t percent) { return static_cast<uint8_t>((percent * 127 + 50) / 100); }
-static uint8_t avrc_to_percent(uint8_t volume) { return static_cast<uint8_t>((volume * 100 + 63) / 127); }
+// Connection management
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 30000;
 static constexpr uint32_t CONNECT_RETRY_MS = 1000;  // After a connect the stack refused to start
 // After losing a connection the speaker is usually back within seconds (e.g. a short radio dropout): retry quickly
 // a few times before falling back to the reconnect interval
 static constexpr uint32_t QUICK_RECONNECT_MS = 3000;
 static constexpr uint8_t QUICK_RECONNECTS = 3;
-static constexpr size_t DISCARD_CHUNK_MS = 20;
+static constexpr uint32_t MAX_FAILED_CONNECTS = 4;    // Then restart the Bluetooth stack
+static constexpr uint32_t MAX_REJECTED_CONNECTS = 2;  // Then drop the stored pairing and pair again
+static constexpr uint32_t MEDIA_CTRL_RETRY_MS = 1000;
+static constexpr uint8_t DISCOVERY_DURATION = 10;  // x 1.28 s
+static constexpr size_t MAX_FOUND_DEVICES = 10;
+static constexpr int MAX_BONDS = 8;
 
+// Stream watchdog: the stack once stopped pulling audio while the link stayed up (no disconnect, no suspend)
+static constexpr uint32_t STALL_TIMEOUT_MS = 3000;             // Started stream without a pull for this long
+static constexpr uint32_t STALL_DISCONNECT_TIMEOUT_MS = 5000;  // Disconnect not confirmed: restart the stack
+
+// AVRCP: some speakers (e.g. Sony SRS-XB100) send play and their own volume right after connecting; ignore that
+static constexpr uint32_t AVRC_CONNECT_GRACE_MS = 3000;
+static constexpr int AVRC_VOLUME_STEP = 5;               // % per volume button press without absolute volume
+static constexpr uint32_t PLAY_PAUSE_CONFIRM_MS = 1000;  // Play/pause fires only if still connected after this
+static constexpr uint8_t AVRC_TL_GET_CAPS = 0;
+static constexpr uint8_t AVRC_TL_VOLUME = 1;
+
+// Playback
+static constexpr size_t DISCARD_CHUNK_MS = 20;  // Granularity of real-time discarding while disconnected
 // Playback progress is reported to the listeners from this task, off the time-critical Bluetooth task (core 0)
 static constexpr uint32_t REPORT_INTERVAL_MS = 5;
 static constexpr uint32_t REPORT_TASK_STACK_SIZE = 3072;
 static constexpr UBaseType_t REPORT_TASK_PRIORITY = 5;
-static constexpr BaseType_t REPORT_TASK_CORE = 1;  // Granularity of real-time discarding while disconnected
-static constexpr uint32_t UNDERRUN_LOG_INTERVAL_MS = 5000;
-static constexpr uint8_t DISCOVERY_DURATION = 10;  // x 1.28 s
-static constexpr size_t MAX_FOUND_DEVICES = 10;
-
+static constexpr BaseType_t REPORT_TASK_CORE = 1;
 // Playback clock: Sendspin hard-syncs at 5 ms error, so the reported clock must be steady (see fill_audio_())
 static constexpr int64_t CLOCK_RESYNC_US = 2000000;  // Stalls up to the sink buffer are caught up later
+
+// Diagnostics
+static constexpr uint32_t UNDERRUN_LOG_INTERVAL_MS = 5000;
 static constexpr uint32_t STATS_LOG_INTERVAL_MS = 30000;
 
 A2DPSourceSpeaker *A2DPSourceSpeaker::instance_ = nullptr;
@@ -85,6 +87,9 @@ static const std::array<int16_t, TEST_TONE_PERIOD> TEST_TONE = [] {
   }
   return table;
 }();
+
+static uint8_t percent_to_avrc(uint8_t percent) { return static_cast<uint8_t>((percent * 127 + 50) / 100); }
+static uint8_t avrc_to_percent(uint8_t volume) { return static_cast<uint8_t>((volume * 100 + 63) / 127); }
 
 static const char *link_state_to_str(LinkState state) {
   switch (state) {
@@ -100,8 +105,51 @@ static const char *link_state_to_str(LinkState state) {
   return "unknown";
 }
 
-static void format_bda(const uint8_t *bda, char *out) {
-  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+struct BdaString {
+  char str[18];
+};
+
+static BdaString format_bda(const uint8_t *bda) {
+  BdaString out;
+  snprintf(out.str, sizeof(out.str), "%02X:%02X:%02X:%02X:%02X:%02X", bda[0], bda[1], bda[2], bda[3], bda[4],
+           bda[5]);
+  return out;
+}
+
+static bool same_bda(const uint8_t *a, const uint8_t *b) { return memcmp(a, b, ESP_BD_ADDR_LEN) == 0; }
+
+/// Paired devices, from the bond list Bluedroid keeps in NVS
+static int get_bonded_devices(esp_bd_addr_t (&bonds)[MAX_BONDS]) {
+  int count = std::min(esp_bt_gap_get_bond_device_num(), MAX_BONDS);
+  if (count <= 0) {
+    return 0;
+  }
+  esp_bt_gap_get_bond_device_list(&count, bonds);
+  return count;
+}
+
+/// Name of a discovered device from its properties (name or extended inquiry response), plus its class of device
+static void parse_discovery_result(const esp_bt_gap_cb_param_t *param, char (&name)[ESP_BT_GAP_MAX_BDNAME_LEN + 1],
+                                   uint32_t &cod) {
+  for (int i = 0; i < param->disc_res.num_prop; i++) {
+    const esp_bt_gap_dev_prop_t *prop = &param->disc_res.prop[i];
+    if (prop->type == ESP_BT_GAP_DEV_PROP_COD) {
+      cod = *static_cast<uint32_t *>(prop->val);
+    } else if (prop->type == ESP_BT_GAP_DEV_PROP_BDNAME && name[0] == '\0') {
+      const size_t n = std::min<size_t>(prop->len, ESP_BT_GAP_MAX_BDNAME_LEN);
+      memcpy(name, prop->val, n);
+    } else if (prop->type == ESP_BT_GAP_DEV_PROP_EIR && name[0] == '\0') {
+      uint8_t n = 0;
+      uint8_t *eir = static_cast<uint8_t *>(prop->val);
+      uint8_t *eir_name = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &n);
+      if (eir_name == nullptr) {
+        eir_name = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME, &n);
+      }
+      if (eir_name != nullptr) {
+        memcpy(name, eir_name, std::min<size_t>(n, ESP_BT_GAP_MAX_BDNAME_LEN));
+      }
+    }
+  }
 }
 
 void A2DPSourceSpeaker::set_address(uint64_t address) {
@@ -121,7 +169,7 @@ void A2DPSourceSpeaker::setup() {
   if (!this->address_configured_) {
     esp_bd_addr_t saved;
     static const esp_bd_addr_t CLEARED = {0};
-    if (this->address_pref_.load(&saved) && memcmp(saved, CLEARED, ESP_BD_ADDR_LEN) != 0) {
+    if (this->address_pref_.load(&saved) && !same_bda(saved, CLEARED)) {
       memcpy(this->remote_address_, saved, ESP_BD_ADDR_LEN);
       this->has_address_ = true;
     }
@@ -209,8 +257,7 @@ bool A2DPSourceSpeaker::init_bluetooth_() {
 
   // Fixed PIN for sinks that only support legacy pairing
   esp_bt_pin_code_t pin_code;
-  const size_t pin_len = std::min(this->pin_code_.size(), sizeof(pin_code));
-  memcpy(pin_code, this->pin_code_.data(), pin_len);
+  const uint8_t pin_len = this->copy_pin_code_(pin_code);
   esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, pin_len, pin_code);
 
   // Sinks open an AVRCP channel after connecting and may drop the link if it is refused
@@ -235,20 +282,14 @@ bool A2DPSourceSpeaker::init_bluetooth_() {
   }
 
   // Bonds live in NVS: fall back to an already paired sink when no address is known
-  int bond_count = esp_bt_gap_get_bond_device_num();
-  if (bond_count > 0) {
-    esp_bd_addr_t bonds[8];
-    bond_count = std::min(bond_count, 8);
-    esp_bt_gap_get_bond_device_list(&bond_count, bonds);
-    for (int i = 0; i < bond_count; i++) {
-      char addr[18];
-      format_bda(bonds[i], addr);
-      ESP_LOGI(TAG, "Paired device: %s", addr);
-    }
-    if (!this->has_address_ && this->pairing_enabled_) {
-      memcpy(this->remote_address_, bonds[0], ESP_BD_ADDR_LEN);
-      this->has_address_ = true;
-    }
+  esp_bd_addr_t bonds[MAX_BONDS];
+  const int bond_count = get_bonded_devices(bonds);
+  for (int i = 0; i < bond_count; i++) {
+    ESP_LOGI(TAG, "Paired device: %s", format_bda(bonds[i]).str);
+  }
+  if (bond_count > 0 && !this->has_address_ && this->pairing_enabled_) {
+    memcpy(this->remote_address_, bonds[0], ESP_BD_ADDR_LEN);
+    this->has_address_ = true;
   }
 
   // Only the ESP connects out (the address comes from the bond list or a discovery). Accepting a sink that reconnects
@@ -257,12 +298,16 @@ bool A2DPSourceSpeaker::init_bluetooth_() {
   return true;
 }
 
+uint8_t A2DPSourceSpeaker::copy_pin_code_(esp_bt_pin_code_t pin_code) const {
+  const size_t pin_len = std::min(this->pin_code_.size(), sizeof(esp_bt_pin_code_t));
+  memcpy(pin_code, this->pin_code_.data(), pin_len);
+  return static_cast<uint8_t>(pin_len);
+}
+
 void A2DPSourceSpeaker::dump_config() {
   ESP_LOGCONFIG(TAG, "A2DP Source Speaker:");
   if (this->has_address_) {
-    char addr[18];
-    format_bda(this->remote_address_, addr);
-    ESP_LOGCONFIG(TAG, "  Address: %s", addr);
+    ESP_LOGCONFIG(TAG, "  Address: %s", format_bda(this->remote_address_).str);
   }
   if (!this->device_name_.empty()) {
     ESP_LOGCONFIG(TAG, "  Device name: %s", this->device_name_.c_str());
@@ -277,184 +322,179 @@ void A2DPSourceSpeaker::dump_config() {
                 link_state_to_str(this->link_state_.load()));
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------------------------------------------
+
 void A2DPSourceSpeaker::loop() {
   const uint32_t now = millis();
   this->update_status_text_();
 
   if (this->address_dirty_.exchange(false)) {
-    this->has_address_ = true;
-    this->address_pref_.save(&this->remote_address_);
-    global_preferences->sync();
+    this->save_address_();
   }
 
   if (this->finishing_ && this->ring_buffer_->available() == 0) {
     this->stop();
   }
 
-  // Connection management
   switch (this->link_state_.load()) {
     case LinkState::IDLE:
-      this->leave_link_ms_ = 0;
-      if (this->scan_requested_) {
-        this->scan_requested_ = false;
-        ESP_LOGI(TAG, "Searching for speakers ready to pair");
-        this->scan_only_ = true;
-        {
-          std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-          this->scan_devices_.clear();
-        }
-        if (!this->start_discovery_()) {
-          this->scan_only_ = false;
-        }
-        break;
-      }
-      if (!this->pairing_enabled_) {
-        // Unpaired: drop the bonds once the link is down (a connect still in progress may have renewed them)
-        if (this->forget_pending_) {
-          this->forget_pending_ = false;
-          this->forget_speaker_();
-        }
-        break;
-      }
-      if (this->stall_disconnect_ms_ != 0) {
-        // Disconnected because the stream stalled: reconnect right away instead of after the reconnect interval
-        this->stall_disconnect_ms_ = 0;
-        this->attempted_once_ = false;
-      }
-      if (!this->attempted_once_ || (now - this->last_attempt_ms_ >= this->reconnect_interval_())) {
-        this->attempted_once_ = true;
-        this->last_attempt_ms_ = now;
-        if (this->quick_reconnects_.load() > 0) {
-          this->quick_reconnects_--;
-        }
-        if (this->rejected_connects_.load() >= MAX_REJECTED_CONNECTS) {
-          // The speaker answers but refuses the A2DP channel, typically because it no longer knows our link key
-          // (it was paired again with another firmware or device). Drop the stale pairing so the next connect pairs
-          // again.
-          ESP_LOGW(TAG, "Speaker rejects the connection, removing the stored pairing; if it does not pair again, "
-                        "put it into pairing mode");
-          esp_bt_gap_remove_bond_device(this->remote_address_);
-          this->rejected_connects_ = 0;
-        }
-        if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
-          this->restart_bluetooth_("Repeated connection failures, restarting Bluetooth");
-          if (this->is_failed()) {
-            return;
-          }
-        }
-        if (this->has_address_) {
-          this->connect_();
-        } else {
-          ESP_LOGI(TAG, "Searching for '%s'", this->device_name_.c_str());
-          this->start_discovery_();
-        }
-      }
+      this->manage_idle_link_(now);
       break;
     case LinkState::DISCOVERING:
-      if (this->discovery_stopped_.load()) {
-        if (this->scan_only_.load()) {
-          this->finish_scan_();
-          if (this->is_failed()) {
-            return;
-          }
-        } else if (!this->pairing_enabled_) {
-          this->link_state_ = LinkState::IDLE;
-        } else if (this->device_found_.load()) {
-          this->has_address_ = true;
-          this->address_pref_.save(&this->remote_address_);
-          global_preferences->sync();
-          // After an inquiry the controller kept delivering 1-4 % less than real time until the next reboot
-          // (Sendspin's buffer then overflows, whole FLAC blocks drop out); a fresh stack connects cleanly
-          this->restart_bluetooth_("Speaker found, restarting Bluetooth before connecting");
-          if (this->is_failed()) {
-            return;
-          }
-          this->connect_();
-        } else {
-          ESP_LOGW(TAG, "'%s' not found, retrying in %" PRIu32 " s", this->device_name_.c_str(),
-                   this->reconnect_interval_ms_ / 1000);
-          this->last_attempt_ms_ = now;
-          this->link_state_ = LinkState::IDLE;
-        }
-      }
+      this->manage_discovery_(now);
       break;
     case LinkState::CONNECTING:
-      // The stack does not always report a failed connect (e.g. when it collides with the sink connecting to us)
-      if (now - this->connect_started_ms_ >= CONNECT_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "Connection attempt timed out");
-        this->failed_connects_++;
-        this->last_attempt_ms_ = now;
-        this->link_state_ = LinkState::IDLE;
-      }
+      this->manage_connecting_link_(now);
       break;
-    case LinkState::CONNECTED: {
-      // Leave the speaker for unpair(), scan() or after another speaker was chosen while this connect was running
-      if (!this->pairing_enabled_ || this->scan_requested_ ||
-          memcmp(this->connected_address_, this->remote_address_, ESP_BD_ADDR_LEN) != 0) {
-        // Repeat the request if the disconnect gets lost
-        if (this->leave_link_ms_ == 0 || now - this->leave_link_ms_ >= STALL_DISCONNECT_TIMEOUT_MS) {
-          ESP_LOGI(TAG, "Disconnecting from the speaker");
-          this->leave_link_ms_ = now;
-          esp_a2d_source_disconnect(this->connected_address_);
-        }
-        break;
-      }
-      if (this->stall_disconnect_ms_ != 0) {
-        if (now - this->stall_disconnect_ms_ >= STALL_DISCONNECT_TIMEOUT_MS) {
-          this->recover_from_stall_("Disconnect after a stalled stream not confirmed, restarting Bluetooth");
-        }
-        break;
-      }
-      const MediaState media = this->media_state_.load();
-      // Signed: the BTC task may have updated last_pull_ms_ after `now` was taken
-      const int32_t since_pull = static_cast<int32_t>(now - this->last_pull_ms_.load());
-      if (media == MediaState::STARTED && since_pull >= static_cast<int32_t>(STALL_TIMEOUT_MS)) {
-        // A reconnect is enough for a sink that drops out now and then (e.g. the JBL GO, several times per hour).
-        // Only a stream that never delivered since it (re)started points to a stuck stack.
-        if (this->last_pull_ms_.load() == this->stream_started_ms_.load()) {
-          this->recover_from_stall_("Bluetooth stream never started pulling, restarting Bluetooth");
-        } else {
-          ESP_LOGW(TAG, "Bluetooth stream stalled (no audio pulled for %" PRId32 " ms), reconnecting", since_pull);
-          this->stall_disconnect_ms_ = now;
-          esp_a2d_source_disconnect(this->remote_address_);
-        }
-        break;
-      }
-      // With keep_alive the stream (silence while idle) runs for the whole connection: some sinks, e.g. the Sony
-      // SRS-XB100, power off after a while when they receive no audio even though they stay connected
-      const bool want_stream = this->keep_alive_ || this->state_ == speaker::STATE_RUNNING;
-      const bool can_send = !this->media_ctrl_pending_.load() && (now - this->last_media_ctrl_ms_ >= MEDIA_CTRL_RETRY_MS);
-      if (can_send) {
-        if (want_stream && media == MediaState::SUSPENDED) {
-          this->request_media_(ESP_A2D_MEDIA_CTRL_START);
-        } else if (!want_stream && media == MediaState::STARTED) {
-          this->request_media_(ESP_A2D_MEDIA_CTRL_SUSPEND);
-        }
-      }
+    case LinkState::CONNECTED:
+      this->manage_connected_link_(now);
       break;
+  }
+  if (this->is_failed()) {
+    return;  // A Bluetooth restart failed
+  }
+
+  this->handle_remote_commands_(now);
+  this->log_diagnostics_(now);
+}
+
+void A2DPSourceSpeaker::manage_idle_link_(uint32_t now) {
+  this->leave_link_ms_ = 0;
+  if (this->scan_requested_) {
+    this->scan_requested_ = false;
+    this->start_scan_();
+    return;
+  }
+  if (!this->pairing_enabled_) {
+    // Unpaired: drop the bonds once the link is down (a connect still in progress may have renewed them)
+    if (this->forget_pending_) {
+      this->forget_pending_ = false;
+      this->forget_speaker_();
+    }
+    return;
+  }
+  if (this->stall_disconnect_ms_ != 0) {
+    // Disconnected because the stream stalled: reconnect right away instead of after the reconnect interval
+    this->stall_disconnect_ms_ = 0;
+    this->attempted_once_ = false;
+  }
+  if (this->attempted_once_ && now - this->last_attempt_ms_ < this->reconnect_interval_()) {
+    return;
+  }
+
+  this->attempted_once_ = true;
+  this->last_attempt_ms_ = now;
+  if (this->quick_reconnects_.load() > 0) {
+    this->quick_reconnects_--;
+  }
+  if (this->rejected_connects_.load() >= MAX_REJECTED_CONNECTS) {
+    // The speaker answers but refuses the A2DP channel, typically because it no longer knows our link key (it was
+    // paired again with another firmware or device). Drop the stale pairing so the next connect pairs again.
+    ESP_LOGW(TAG, "Speaker rejects the connection, removing the stored pairing; if it does not pair again, "
+                  "put it into pairing mode");
+    esp_bt_gap_remove_bond_device(this->remote_address_);
+    this->rejected_connects_ = 0;
+  }
+  if (this->failed_connects_.load() >= MAX_FAILED_CONNECTS) {
+    this->restart_bluetooth_("Repeated connection failures, restarting Bluetooth");
+    if (this->is_failed()) {
+      return;
     }
   }
+  if (this->has_address_) {
+    this->connect_();
+  } else {
+    ESP_LOGI(TAG, "Searching for '%s'", this->device_name_.c_str());
+    this->start_discovery_();
+  }
+}
 
-  if (now - this->last_stats_log_ms_ >= STATS_LOG_INTERVAL_MS) {
-    const uint32_t elapsed_ms = now - this->last_stats_log_ms_;
-    this->last_stats_log_ms_ = now;
-    const uint32_t pulled = this->pulled_frames_.exchange(0);
-    const uint32_t calls = this->cb_calls_.exchange(0);
-    const uint32_t cb_time = this->cb_time_us_.exchange(0);
-    ESP_LOGD(TAG,
-             "Stats: pull rate %" PRIu32 " Hz, %" PRIu32 " clock resyncs, callback %" PRIu32 "/s avg %" PRIu32
-             " us max %" PRIu32 " us (%" PRIu32 " ms/s), internal heap %u free (min %u)",
-             static_cast<uint32_t>(static_cast<uint64_t>(pulled) * 1000 / elapsed_ms), this->clock_resyncs_.exchange(0),
-             calls * 1000 / elapsed_ms, calls ? cb_time / calls : 0, this->cb_max_us_.exchange(0),
-             cb_time / elapsed_ms, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+void A2DPSourceSpeaker::manage_discovery_(uint32_t now) {
+  if (!this->discovery_stopped_.load()) {
+    return;
+  }
+  if (this->scan_only_.load()) {
+    this->finish_scan_();
+  } else if (!this->pairing_enabled_) {
+    this->link_state_ = LinkState::IDLE;
+  } else if (this->device_found_.load()) {
+    this->save_address_();
+    // After an inquiry the controller kept delivering 1-4 % less than real time until the next reboot (Sendspin's
+    // buffer then overflows, whole FLAC blocks drop out); a fresh stack connects cleanly
+    this->restart_bluetooth_("Speaker found, restarting Bluetooth before connecting");
+    if (this->is_failed()) {
+      return;
+    }
+    this->connect_();
+  } else {
+    ESP_LOGW(TAG, "'%s' not found, retrying in %" PRIu32 " s", this->device_name_.c_str(),
+             this->reconnect_interval_ms_ / 1000);
+    this->last_attempt_ms_ = now;
+    this->link_state_ = LinkState::IDLE;
+  }
+}
+
+void A2DPSourceSpeaker::manage_connecting_link_(uint32_t now) {
+  // The stack does not always report a failed connect (e.g. when it collides with the sink connecting to us)
+  if (now - this->connect_started_ms_ >= CONNECT_TIMEOUT_MS) {
+    ESP_LOGW(TAG, "Connection attempt timed out");
+    this->failed_connects_++;
+    this->last_attempt_ms_ = now;
+    this->link_state_ = LinkState::IDLE;
+  }
+}
+
+void A2DPSourceSpeaker::manage_connected_link_(uint32_t now) {
+  // Leave the speaker for unpair(), scan() or after another speaker was chosen while this connect was running
+  if (!this->pairing_enabled_ || this->scan_requested_ || !same_bda(this->connected_address_, this->remote_address_)) {
+    // Repeat the request if the disconnect gets lost
+    if (this->leave_link_ms_ == 0 || now - this->leave_link_ms_ >= STALL_DISCONNECT_TIMEOUT_MS) {
+      ESP_LOGI(TAG, "Disconnecting from the speaker");
+      this->leave_link_ms_ = now;
+      esp_a2d_source_disconnect(this->connected_address_);
+    }
+    return;
+  }
+  if (this->stall_disconnect_ms_ != 0) {
+    if (now - this->stall_disconnect_ms_ >= STALL_DISCONNECT_TIMEOUT_MS) {
+      this->recover_from_stall_("Disconnect after a stalled stream not confirmed, restarting Bluetooth");
+    }
+    return;
   }
 
-  if (now - this->last_load_log_ms_ >= STATS_LOG_INTERVAL_MS) {
-    this->last_load_log_ms_ = now;
-    this->log_task_load_();
+  const MediaState media = this->media_state_.load();
+  // Signed: the BTC task may have updated last_pull_ms_ after `now` was taken
+  const int32_t since_pull = static_cast<int32_t>(now - this->last_pull_ms_.load());
+  if (media == MediaState::STARTED && since_pull >= static_cast<int32_t>(STALL_TIMEOUT_MS)) {
+    // A reconnect is enough for a sink that drops out now and then (e.g. the JBL GO, several times per hour). Only a
+    // stream that never delivered since it (re)started points to a stuck stack.
+    if (this->last_pull_ms_.load() == this->stream_started_ms_.load()) {
+      this->recover_from_stall_("Bluetooth stream never started pulling, restarting Bluetooth");
+    } else {
+      ESP_LOGW(TAG, "Bluetooth stream stalled (no audio pulled for %" PRId32 " ms), reconnecting", since_pull);
+      this->stall_disconnect_ms_ = now;
+      esp_a2d_source_disconnect(this->remote_address_);
+    }
+    return;
   }
 
+  // With keep_alive the stream (silence while idle) runs for the whole connection: some sinks, e.g. the Sony
+  // SRS-XB100, power off after a while when they receive no audio even though they stay connected
+  const bool want_stream = this->keep_alive_ || this->state_ == speaker::STATE_RUNNING;
+  const bool can_send = !this->media_ctrl_pending_.load() && (now - this->last_media_ctrl_ms_ >= MEDIA_CTRL_RETRY_MS);
+  if (!can_send) {
+    return;
+  }
+  if (want_stream && media == MediaState::SUSPENDED) {
+    this->request_media_(ESP_A2D_MEDIA_CTRL_START);
+  } else if (!want_stream && media == MediaState::STARTED) {
+    this->request_media_(ESP_A2D_MEDIA_CTRL_SUSPEND);
+  }
+}
+
+void A2DPSourceSpeaker::handle_remote_commands_(uint32_t now) {
   // Speaker buttons and volume, received in the BTC task, fire the automations from the main loop
   const int remote_volume = this->pending_volume_.exchange(-1);
   if (remote_volume >= 0) {
@@ -487,6 +527,28 @@ void A2DPSourceSpeaker::loop() {
       ESP_LOGI(TAG, "Ignoring play/pause sent while the speaker disconnected (powering off)");
     }
   }
+}
+
+void A2DPSourceSpeaker::log_diagnostics_(uint32_t now) {
+  if (now - this->last_stats_log_ms_ >= STATS_LOG_INTERVAL_MS) {
+    const uint32_t elapsed_ms = now - this->last_stats_log_ms_;
+    this->last_stats_log_ms_ = now;
+    const uint32_t pulled = this->pulled_frames_.exchange(0);
+    const uint32_t calls = this->cb_calls_.exchange(0);
+    const uint32_t cb_time = this->cb_time_us_.exchange(0);
+    ESP_LOGD(TAG,
+             "Stats: pull rate %" PRIu32 " Hz, %" PRIu32 " clock resyncs, callback %" PRIu32 "/s avg %" PRIu32
+             " us max %" PRIu32 " us (%" PRIu32 " ms/s), internal heap %u free (min %u)",
+             static_cast<uint32_t>(static_cast<uint64_t>(pulled) * 1000 / elapsed_ms), this->clock_resyncs_.exchange(0),
+             calls * 1000 / elapsed_ms, calls ? cb_time / calls : 0, this->cb_max_us_.exchange(0),
+             cb_time / elapsed_ms, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+  }
+
+  if (now - this->last_load_log_ms_ >= STATS_LOG_INTERVAL_MS) {
+    this->last_load_log_ms_ = now;
+    this->log_task_load_();
+  }
 
   const uint32_t underruns = this->underrun_bytes_.load();
   if (underruns > 0 && (now - this->last_underrun_log_ms_ >= UNDERRUN_LOG_INTERVAL_MS)) {
@@ -494,37 +556,6 @@ void A2DPSourceSpeaker::loop() {
     this->underrun_bytes_ -= underruns;
     ESP_LOGW(TAG, "Buffer underrun: %" PRIu32 " ms of silence inserted",
              underruns / BYTES_PER_FRAME * 1000 / SAMPLE_RATE);
-  }
-}
-
-void A2DPSourceSpeaker::recover_from_stall_(const char *reason) {
-  this->stall_disconnect_ms_ = 0;
-  this->restart_bluetooth_(reason);
-  if (this->is_failed()) {
-    return;
-  }
-  // The restart drops the link without a disconnect event; reconnect right away
-  this->link_state_ = LinkState::IDLE;
-  this->attempted_once_ = false;
-}
-
-void A2DPSourceSpeaker::restart_bluetooth_(const char *reason) {
-  // Clears controller state that survives reconnects: a stale ACL link the host no longer knows about (every connect
-  // then fails with "Conn Exists"), or reduced throughput after an inquiry
-  ESP_LOGW(TAG, "%s", reason);
-  this->failed_connects_ = 0;
-  esp_a2d_source_deinit();
-  esp_avrc_tg_deinit();
-  esp_avrc_ct_deinit();
-  esp_bluedroid_disable();
-  esp_bluedroid_deinit();
-  esp_bt_controller_disable();
-  esp_bt_controller_deinit();
-  this->media_state_ = MediaState::SUSPENDED;
-  this->media_ctrl_pending_ = false;
-  if (!this->init_bluetooth_()) {
-    ESP_LOGE(TAG, "Bluetooth restart failed");
-    this->mark_failed();
   }
 }
 
@@ -590,14 +621,13 @@ void A2DPSourceSpeaker::log_task_load_() {
 }
 
 void A2DPSourceSpeaker::update_status_text_() {
-  char addr[18];
-  format_bda(this->remote_address_, addr);
+  const BdaString addr = format_bda(this->remote_address_);
   std::string name;
   {
     std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
     name = this->remote_name_;
   }
-  const std::string peer = name.empty() ? std::string(addr) : name + " (" + addr + ")";
+  const std::string peer = name.empty() ? std::string(addr.str) : name + " (" + addr.str + ")";
   switch (this->link_state_.load()) {
     case LinkState::CONNECTED:
       this->status_text_ = (this->leave_link_ms_ != 0 ? "Disconnecting from " : "Connected to ") + peer;
@@ -622,14 +652,144 @@ void A2DPSourceSpeaker::update_status_text_() {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Bluetooth stack and connection handling (main loop)
+// ---------------------------------------------------------------------------------------------------------------
+
+void A2DPSourceSpeaker::recover_from_stall_(const char *reason) {
+  this->stall_disconnect_ms_ = 0;
+  this->restart_bluetooth_(reason);
+  if (this->is_failed()) {
+    return;
+  }
+  // The restart drops the link without a disconnect event; reconnect right away
+  this->link_state_ = LinkState::IDLE;
+  this->attempted_once_ = false;
+}
+
+void A2DPSourceSpeaker::restart_bluetooth_(const char *reason) {
+  // Clears controller state that survives reconnects: a stale ACL link the host no longer knows about (every connect
+  // then fails with "Conn Exists"), or reduced throughput after an inquiry
+  ESP_LOGW(TAG, "%s", reason);
+  this->failed_connects_ = 0;
+  esp_a2d_source_deinit();
+  esp_avrc_tg_deinit();
+  esp_avrc_ct_deinit();
+  esp_bluedroid_disable();
+  esp_bluedroid_deinit();
+  esp_bt_controller_disable();
+  esp_bt_controller_deinit();
+  this->reset_media_state_();
+  if (!this->init_bluetooth_()) {
+    ESP_LOGE(TAG, "Bluetooth restart failed");
+    this->mark_failed();
+  }
+}
+
+uint32_t A2DPSourceSpeaker::reconnect_interval_() const {
+  return this->quick_reconnects_.load() > 0 ? QUICK_RECONNECT_MS : this->reconnect_interval_ms_;
+}
+
+void A2DPSourceSpeaker::connect_() {
+  ESP_LOGI(TAG, "Connecting to %s", format_bda(this->remote_address_).str);
+  this->connect_started_ms_ = millis();
+  this->acl_up_ = false;
+  this->link_state_ = LinkState::CONNECTING;
+  esp_err_t err = esp_a2d_source_connect(this->remote_address_);
+  if (err != ESP_OK) {
+    // Right after a stack restart the profile is not ready yet (ESP_ERR_INVALID_STATE): retry after a second
+    // instead of the full reconnect interval
+    ESP_LOGW(TAG, "Connect failed: %s, retrying", esp_err_to_name(err));
+    this->last_attempt_ms_ = millis() - this->reconnect_interval_() + CONNECT_RETRY_MS;
+    this->link_state_ = LinkState::IDLE;
+  }
+}
+
+bool A2DPSourceSpeaker::start_discovery_() {
+  this->device_found_ = false;
+  this->discovery_stopped_ = false;
+  this->link_state_ = LinkState::DISCOVERING;
+  esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, DISCOVERY_DURATION, 0);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Starting discovery failed: %s", esp_err_to_name(err));
+    this->link_state_ = LinkState::IDLE;
+    return false;
+  }
+  return true;
+}
+
+void A2DPSourceSpeaker::start_scan_() {
+  ESP_LOGI(TAG, "Searching for speakers ready to pair");
+  this->scan_only_ = true;
+  {
+    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+    this->scan_devices_.clear();
+  }
+  if (!this->start_discovery_()) {
+    this->scan_only_ = false;
+  }
+}
+
+void A2DPSourceSpeaker::finish_scan_() {
+  {
+    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+    this->found_devices_ = std::move(this->scan_devices_);
+    this->scan_devices_.clear();
+  }
+  ESP_LOGI(TAG, "Search finished, %zu speakers found", this->found_devices_.size());
+#ifdef USE_SELECT
+  if (this->device_select_ != nullptr) {
+    std::vector<std::string> labels;
+    for (const auto &device : this->found_devices_) {
+      labels.push_back((device.name.empty() ? std::string("Unnamed") : device.name) + " (" +
+                       format_bda(device.address).str + ")");
+    }
+    char placeholder[96];
+    if (labels.empty()) {
+      snprintf(placeholder, sizeof(placeholder), "No speakers found, put one into pairing mode and search again");
+    } else {
+      snprintf(placeholder, sizeof(placeholder), "%zu found, choose a speaker", labels.size());
+    }
+    this->device_select_->set_devices(placeholder, labels);
+  }
+#endif
+  this->scan_only_ = false;
+  // Like after a search by name: the controller is slower than real time after an inquiry until it restarts. Then
+  // reconnect to the paired speaker, if any.
+  this->restart_bluetooth_("Search finished, restarting Bluetooth");
+  this->attempted_once_ = false;
+  this->link_state_ = LinkState::IDLE;
+}
+
+void A2DPSourceSpeaker::request_media_(esp_a2d_media_ctrl_t ctrl) {
+  this->last_media_ctrl_ms_ = millis();
+  this->media_ctrl_pending_ = true;
+  this->media_state_ = ctrl == ESP_A2D_MEDIA_CTRL_START ? MediaState::STARTING : MediaState::SUSPENDING;
+  ESP_LOGD(TAG, "Requesting media %s", ctrl == ESP_A2D_MEDIA_CTRL_START ? "start" : "suspend");
+  esp_err_t err = esp_a2d_media_ctrl(ctrl);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Media control failed: %s", esp_err_to_name(err));
+    this->media_ctrl_pending_ = false;
+    this->media_state_ = ctrl == ESP_A2D_MEDIA_CTRL_START ? MediaState::SUSPENDED : MediaState::STARTED;
+  }
+}
+
+void A2DPSourceSpeaker::reset_media_state_() {
+  this->media_state_ = MediaState::SUSPENDED;
+  this->media_ctrl_pending_ = false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pairing (main loop)
+// ---------------------------------------------------------------------------------------------------------------
+
 void A2DPSourceSpeaker::repair() {
   if (this->address_configured_) {
     ESP_LOGW(TAG, "The speaker address is fixed in the configuration; only renewing the pairing");
   }
-  char addr[18];
-  format_bda(this->remote_address_, addr);
-  ESP_LOGI(TAG, "Re-pairing: dropping the pairing with %s and searching for '%s'", addr, this->device_name_.c_str());
-  this->enable_pairing_();
+  ESP_LOGI(TAG, "Re-pairing: dropping the pairing with %s and searching for '%s'",
+           format_bda(this->remote_address_).str, this->device_name_.c_str());
+  this->set_pairing_enabled_(true);
   if (this->link_state_.load() == LinkState::CONNECTED) {
     esp_a2d_source_disconnect(this->remote_address_);
   }
@@ -639,16 +799,10 @@ void A2DPSourceSpeaker::repair() {
   esp_bt_gap_remove_bond_device(this->remote_address_);
   this->rejected_connects_ = 0;
   this->failed_connects_ = 0;
-  {
-    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-    this->remote_name_.clear();
-  }
+  this->set_remote_name_("");
   if (!this->address_configured_ && !this->device_name_.empty()) {
     // Forget the address, so the next attempt discovers the speaker by name and pairs it
-    esp_bd_addr_t cleared = {0};
-    this->address_pref_.save(&cleared);
-    global_preferences->sync();
-    this->has_address_ = false;
+    this->clear_saved_address_();
   }
   // Start the next attempt right away; a disconnect still in progress moves the link to IDLE first
   this->attempted_once_ = false;
@@ -675,27 +829,21 @@ void A2DPSourceSpeaker::pair_found_device(size_t index) {
     return;
   }
   const FoundDevice &device = this->found_devices_[index];
-  char addr[18];
-  format_bda(device.address, addr);
+  const BdaString addr = format_bda(device.address);
   if (this->address_configured_) {
-    ESP_LOGW(TAG, "The speaker address is fixed in the configuration; remove 'address' to choose %s", addr);
+    ESP_LOGW(TAG, "The speaker address is fixed in the configuration; remove 'address' to choose %s", addr.str);
     return;
   }
-  ESP_LOGI(TAG, "Pairing '%s' (%s), dropping the old pairing", device.name.c_str(), addr);
-  this->enable_pairing_();
+  ESP_LOGI(TAG, "Pairing '%s' (%s), dropping the old pairing", device.name.c_str(), addr.str);
+  this->set_pairing_enabled_(true);
   this->forget_pending_ = false;
   this->scan_requested_ = false;
   this->forget_speaker_();
   // loop() disconnects a speaker connected now or by an attempt still in progress, since its address differs
   this->address_chosen_ = true;
   memcpy(this->remote_address_, device.address, ESP_BD_ADDR_LEN);
-  this->has_address_ = true;
-  this->address_pref_.save(&this->remote_address_);
-  global_preferences->sync();
-  {
-    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-    this->remote_name_ = device.name;
-  }
+  this->save_address_();
+  this->set_remote_name_(device.name);
   // Connect right away (pairs on the first connect) once the link is IDLE
   this->attempted_once_ = false;
   if (this->scan_only_.load()) {
@@ -713,11 +861,7 @@ void A2DPSourceSpeaker::pair_found_device(size_t index) {
 
 void A2DPSourceSpeaker::unpair() {
   ESP_LOGI(TAG, "Unpairing: forgetting the speaker, no connection attempts until the next pairing");
-  if (this->pairing_enabled_) {
-    this->pairing_enabled_ = false;
-    this->pairing_enabled_pref_.save(&this->pairing_enabled_);
-    global_preferences->sync();
-  }
+  this->set_pairing_enabled_(false);
   if (this->link_state_.load() == LinkState::DISCOVERING && !this->scan_only_.load()) {
     esp_bt_gap_cancel_discovery();
   }
@@ -730,115 +874,45 @@ void A2DPSourceSpeaker::unpair() {
 #endif
 }
 
-void A2DPSourceSpeaker::enable_pairing_() {
-  if (!this->pairing_enabled_) {
-    this->pairing_enabled_ = true;
-    this->pairing_enabled_pref_.save(&this->pairing_enabled_);
-  }
-}
-
 void A2DPSourceSpeaker::forget_speaker_() {
-  int bond_count = esp_bt_gap_get_bond_device_num();
-  if (bond_count > 0) {
-    esp_bd_addr_t bonds[8];
-    bond_count = std::min(bond_count, 8);
-    esp_bt_gap_get_bond_device_list(&bond_count, bonds);
-    for (int i = 0; i < bond_count; i++) {
-      esp_bt_gap_remove_bond_device(bonds[i]);
-    }
+  esp_bd_addr_t bonds[MAX_BONDS];
+  const int bond_count = get_bonded_devices(bonds);
+  for (int i = 0; i < bond_count; i++) {
+    esp_bt_gap_remove_bond_device(bonds[i]);
   }
   this->rejected_connects_ = 0;
   this->address_chosen_ = false;
   this->failed_connects_ = 0;
-  {
-    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-    this->remote_name_.clear();
-  }
+  this->set_remote_name_("");
   if (!this->address_configured_) {
-    esp_bd_addr_t cleared = {0};
-    this->address_pref_.save(&cleared);
-    this->has_address_ = false;
+    this->clear_saved_address_();
   }
+}
+
+void A2DPSourceSpeaker::set_pairing_enabled_(bool enabled) {
+  if (this->pairing_enabled_ != enabled) {
+    this->pairing_enabled_ = enabled;
+    this->pairing_enabled_pref_.save(&this->pairing_enabled_);
+    global_preferences->sync();
+  }
+}
+
+void A2DPSourceSpeaker::save_address_() {
+  this->has_address_ = true;
+  this->address_pref_.save(&this->remote_address_);
   global_preferences->sync();
 }
 
-bool A2DPSourceSpeaker::start_discovery_() {
-  this->device_found_ = false;
-  this->discovery_stopped_ = false;
-  this->link_state_ = LinkState::DISCOVERING;
-  esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, DISCOVERY_DURATION, 0);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Starting discovery failed: %s", esp_err_to_name(err));
-    this->link_state_ = LinkState::IDLE;
-    return false;
-  }
-  return true;
+void A2DPSourceSpeaker::clear_saved_address_() {
+  esp_bd_addr_t cleared = {0};
+  this->address_pref_.save(&cleared);
+  global_preferences->sync();
+  this->has_address_ = false;
 }
 
-void A2DPSourceSpeaker::finish_scan_() {
-  {
-    std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-    this->found_devices_ = std::move(this->scan_devices_);
-    this->scan_devices_.clear();
-  }
-  ESP_LOGI(TAG, "Search finished, %zu speakers found", this->found_devices_.size());
-#ifdef USE_SELECT
-  if (this->device_select_ != nullptr) {
-    std::vector<std::string> labels;
-    for (const auto &device : this->found_devices_) {
-      char addr[18];
-      format_bda(device.address, addr);
-      labels.push_back((device.name.empty() ? std::string("Unnamed") : device.name) + " (" + addr + ")");
-    }
-    char placeholder[96];
-    if (labels.empty()) {
-      snprintf(placeholder, sizeof(placeholder), "No speakers found, put one into pairing mode and search again");
-    } else {
-      snprintf(placeholder, sizeof(placeholder), "%zu found, choose a speaker", labels.size());
-    }
-    this->device_select_->set_devices(placeholder, labels);
-  }
-#endif
-  this->scan_only_ = false;
-  // Like after a search by name: the controller is slower than real time after an inquiry until it restarts. Then
-  // reconnect to the paired speaker, if any.
-  this->restart_bluetooth_("Search finished, restarting Bluetooth");
-  this->attempted_once_ = false;
-  this->link_state_ = LinkState::IDLE;
-}
-
-uint32_t A2DPSourceSpeaker::reconnect_interval_() const {
-  return this->quick_reconnects_.load() > 0 ? QUICK_RECONNECT_MS : this->reconnect_interval_ms_;
-}
-
-void A2DPSourceSpeaker::connect_() {
-  char addr[18];
-  format_bda(this->remote_address_, addr);
-  ESP_LOGI(TAG, "Connecting to %s", addr);
-  this->connect_started_ms_ = millis();
-  this->acl_up_ = false;
-  this->link_state_ = LinkState::CONNECTING;
-  esp_err_t err = esp_a2d_source_connect(this->remote_address_);
-  if (err != ESP_OK) {
-    // Right after a stack restart the profile is not ready yet (ESP_ERR_INVALID_STATE): retry after a second
-    // instead of the full reconnect interval
-    ESP_LOGW(TAG, "Connect failed: %s, retrying", esp_err_to_name(err));
-    this->last_attempt_ms_ = millis() - this->reconnect_interval_() + CONNECT_RETRY_MS;
-    this->link_state_ = LinkState::IDLE;
-  }
-}
-
-void A2DPSourceSpeaker::request_media_(esp_a2d_media_ctrl_t ctrl) {
-  this->last_media_ctrl_ms_ = millis();
-  this->media_ctrl_pending_ = true;
-  this->media_state_ = ctrl == ESP_A2D_MEDIA_CTRL_START ? MediaState::STARTING : MediaState::SUSPENDING;
-  ESP_LOGD(TAG, "Requesting media %s", ctrl == ESP_A2D_MEDIA_CTRL_START ? "start" : "suspend");
-  esp_err_t err = esp_a2d_media_ctrl(ctrl);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Media control failed: %s", esp_err_to_name(err));
-    this->media_ctrl_pending_ = false;
-    this->media_state_ = ctrl == ESP_A2D_MEDIA_CTRL_START ? MediaState::SUSPENDED : MediaState::STARTED;
-  }
+void A2DPSourceSpeaker::set_remote_name_(const std::string &name) {
+  std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+  this->remote_name_ = name;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -981,6 +1055,253 @@ void A2DPSourceSpeaker::avrc_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_
   }
 }
 
+int32_t A2DPSourceSpeaker::data_callback(uint8_t *data, int32_t len) {
+  if (instance_ == nullptr || data == nullptr || len <= 0) {
+    return 0;
+  }
+  instance_->last_pull_ms_ = millis();
+  const int64_t start = esp_timer_get_time();
+  const int32_t result = instance_->fill_audio_(data, len);
+  const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time() - start);
+  instance_->cb_calls_++;
+  instance_->cb_time_us_ += elapsed;
+  uint32_t max = instance_->cb_max_us_.load();
+  while (elapsed > max && !instance_->cb_max_us_.compare_exchange_weak(max, elapsed)) {
+  }
+  return result;
+}
+
+int32_t A2DPSourceSpeaker::fill_audio_(uint8_t *data, int32_t len) {
+  size_t bytes_read = 0;
+  if (this->streaming_.load() && !this->pause_state_.load()) {
+    const size_t wanted = len - (len % BYTES_PER_FRAME);
+    bytes_read = this->ring_buffer_->read(data, wanted, 0);
+    bytes_read -= bytes_read % BYTES_PER_FRAME;
+
+    this->advance_playback_clock_(len / BYTES_PER_FRAME);
+
+    if (bytes_read > 0) {
+      this->apply_software_volume_(data, bytes_read);
+      // Time when the last frame of this block leaves the ESP; the sink's own latency is compensated with
+      // Sendspin's static delay
+      const int64_t timestamp = this->clock_anchor_us_ + (this->clock_frames_ - (len - bytes_read) / BYTES_PER_FRAME) *
+                                                             1000000LL / SAMPLE_RATE;
+      // Reporting runs the listeners (Sendspin takes a mutex there), which must not block the Bluetooth task: hand
+      // the progress to report_task() instead
+      portENTER_CRITICAL(&this->report_lock_);
+      this->report_frames_ += bytes_read / BYTES_PER_FRAME;
+      this->report_timestamp_ = timestamp;
+      portEXIT_CRITICAL(&this->report_lock_);
+    }
+    if (bytes_read < static_cast<size_t>(len)) {
+      this->underrun_bytes_ += len - bytes_read;
+    }
+  } else {
+    this->clock_valid_ = false;
+  }
+
+  // Always hand the stack a full buffer; silence fills any gap
+  if (bytes_read < static_cast<size_t>(len)) {
+    this->fill_gap_(data + bytes_read, len - bytes_read);
+  }
+  return len;
+}
+
+void A2DPSourceSpeaker::advance_playback_clock_(uint32_t frames) {
+  // The stack pulls audio in irregular bursts, so the callback time jitters by tens of milliseconds. It paces the
+  // pulls with the ESP's own clock, so the frames handed over are the playback clock: report timestamps from that
+  // steady clock and only re-anchor after a real discontinuity (stream start, stall). Sendspin hard-syncs at 5 ms
+  // error, so any continuous correction towards the jittery pull time would show up as drift. A constant offset
+  // between pull time and actual playback is the sink's latency, which Sendspin's static delay compensates.
+  const int64_t now = esp_timer_get_time();
+  const int64_t model_now = this->clock_anchor_us_ + this->clock_frames_ * 1000000LL / SAMPLE_RATE;
+  const int64_t error = now - model_now;
+  if (!this->clock_valid_ || error > CLOCK_RESYNC_US || error < -CLOCK_RESYNC_US) {
+    if (this->clock_valid_) {
+      this->clock_resyncs_++;
+    }
+    this->clock_anchor_us_ = now;
+    this->clock_frames_ = 0;
+    this->clock_valid_ = true;
+  }
+  this->pulled_frames_ += frames;
+  this->clock_frames_ += frames;
+}
+
+void A2DPSourceSpeaker::fill_gap_(uint8_t *data, size_t length) {
+  if (!this->test_tone_ || this->streaming_.load()) {
+    memset(data, 0, length);
+    return;
+  }
+  // Diagnostic: a steady tone instead of idle silence makes dropouts on the Bluetooth link audible without any WiFi
+  // streaming going on
+  int16_t *samples = reinterpret_cast<int16_t *>(data);
+  const size_t frames = length / BYTES_PER_FRAME;
+  for (size_t i = 0; i < frames; i++) {
+    samples[2 * i] = samples[2 * i + 1] = TEST_TONE[this->test_tone_phase_];
+    this->test_tone_phase_ = (this->test_tone_phase_ + 1) % TEST_TONE_PERIOD;
+  }
+}
+
+void A2DPSourceSpeaker::handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
+  switch (event) {
+    case ESP_BT_GAP_DISC_RES_EVT: {
+      char name[ESP_BT_GAP_MAX_BDNAME_LEN + 1] = {0};
+      uint32_t cod = 0;
+      parse_discovery_result(param, name, cod);
+      const BdaString addr = format_bda(param->disc_res.bda);
+      ESP_LOGI(TAG, "Found device %s '%s'", addr.str, name);
+
+      if (this->scan_only_.load()) {
+        // Offer audio devices only (speakers, headphones), not phones or computers nearby
+        if (esp_bt_gap_get_cod_major_dev(cod) == ESP_BT_COD_MAJOR_DEV_AV) {
+          this->add_scan_device_(param->disc_res.bda, name);
+        }
+      } else if (!this->device_found_.load() && name[0] != '\0' && this->device_name_ == name) {
+        memcpy(this->remote_address_, param->disc_res.bda, ESP_BD_ADDR_LEN);
+        this->device_found_ = true;
+        ESP_LOGI(TAG, "Found '%s' at %s; set 'address: %s' to skip discovery", name, addr.str, addr.str);
+        esp_bt_gap_cancel_discovery();
+      }
+      break;
+    }
+    case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
+      if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
+        this->discovery_stopped_ = true;
+      }
+      break;
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+      // Tells a speaker that is off (no link) apart from one that answers but refuses A2DP
+      if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
+          same_bda(param->acl_conn_cmpl_stat.bda, this->remote_address_)) {
+        this->acl_up_ = true;
+      }
+      break;
+    case ESP_BT_GAP_AUTH_CMPL_EVT:
+      if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+        ESP_LOGI(TAG, "Paired with '%s'", param->auth_cmpl.device_name);
+      } else {
+        ESP_LOGW(TAG, "Pairing failed (status %d); is the speaker in pairing mode?", param->auth_cmpl.stat);
+      }
+      break;
+    case ESP_BT_GAP_PIN_REQ_EVT: {
+      esp_bt_pin_code_t pin_code;
+      const uint8_t pin_len = this->copy_pin_code_(pin_code);
+      esp_bt_gap_pin_reply(param->pin_req.bda, true, pin_len, pin_code);
+      break;
+    }
+    case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
+      if (param->read_rmt_name.stat == ESP_BT_STATUS_SUCCESS) {
+        this->set_remote_name_(reinterpret_cast<const char *>(param->read_rmt_name.rmt_name));
+      }
+      break;
+    case ESP_BT_GAP_CFM_REQ_EVT:
+      esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+      break;
+    default:
+      break;
+  }
+}
+
+void A2DPSourceSpeaker::add_scan_device_(const uint8_t *address, const char *name) {
+  std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
+  auto it = std::find_if(this->scan_devices_.begin(), this->scan_devices_.end(),
+                         [&](const FoundDevice &d) { return same_bda(d.address, address); });
+  if (it != this->scan_devices_.end()) {
+    if (it->name.empty()) {
+      it->name = name;
+    }
+  } else if (this->scan_devices_.size() < MAX_FOUND_DEVICES) {
+    FoundDevice device;
+    memcpy(device.address, address, ESP_BD_ADDR_LEN);
+    device.name = name;
+    this->scan_devices_.push_back(std::move(device));
+  }
+}
+
+void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
+  switch (event) {
+    case ESP_A2D_CONNECTION_STATE_EVT:
+      this->handle_connection_state_(param->conn_stat.state, param->conn_stat.remote_bda);
+      break;
+    case ESP_A2D_AUDIO_STATE_EVT:
+      // No ESP_COEX_BT_ST_A2DP_STREAMING hint: it gives Bluetooth priority over WiFi, and the resulting WiFi latency
+      // ruins Sendspin's clock sync
+      if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
+        ESP_LOGD(TAG, "Media stream started");
+        this->last_pull_ms_ = millis();  // Grace period for the first pull
+        this->stream_started_ms_ = this->last_pull_ms_.load();
+        this->media_state_ = MediaState::STARTED;
+      } else {
+        ESP_LOGD(TAG, "Media stream suspended");
+        this->media_state_ = MediaState::SUSPENDED;
+      }
+      break;
+    case ESP_A2D_MEDIA_CTRL_ACK_EVT:
+      this->media_ctrl_pending_ = false;
+      if (param->media_ctrl_stat.status != ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
+        ESP_LOGW(TAG, "Media control %d rejected (status %d)", param->media_ctrl_stat.cmd,
+                 param->media_ctrl_stat.status);
+        this->media_state_ =
+            param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_START ? MediaState::SUSPENDED : MediaState::STARTED;
+      }
+      break;
+    case ESP_A2D_REPORT_SNK_DELAY_VALUE_EVT:
+      // Delay reports are in 1/10 ms
+      ESP_LOGI(TAG, "Speaker reports a delay of %u.%u ms; use it as Sendspin static delay",
+               param->a2d_report_delay_value_stat.delay_value / 10,
+               param->a2d_report_delay_value_stat.delay_value % 10);
+      break;
+    default:
+      break;
+  }
+}
+
+void A2DPSourceSpeaker::handle_connection_state_(esp_a2d_connection_state_t state, esp_bd_addr_t remote_bda) {
+  const BdaString addr = format_bda(remote_bda);
+  switch (state) {
+    case ESP_A2D_CONNECTION_STATE_CONNECTED:
+      ESP_LOGI(TAG, "Connected to %s", addr.str);
+      esp_bt_gap_read_remote_name(remote_bda);
+      this->failed_connects_ = 0;
+      this->rejected_connects_ = 0;
+      this->quick_reconnects_ = 0;
+      memcpy(this->connected_address_, remote_bda, ESP_BD_ADDR_LEN);
+      if (same_bda(this->remote_address_, remote_bda)) {
+        this->address_chosen_ = false;
+      } else if (!this->address_configured_ && !this->address_chosen_.load()) {
+        // The sink connected on its own (e.g. after power on); remember it for outgoing reconnects
+        memcpy(this->remote_address_, remote_bda, ESP_BD_ADDR_LEN);
+        this->address_dirty_ = true;
+      }
+      this->reset_media_state_();
+      this->link_state_ = LinkState::CONNECTED;
+      break;
+    case ESP_A2D_CONNECTION_STATE_DISCONNECTED: {
+      ESP_LOGW(TAG, "Disconnected from %s", addr.str);
+      const LinkState link = this->link_state_.load();
+      if (link == LinkState::CONNECTED) {
+        this->quick_reconnects_ = QUICK_RECONNECTS;
+      } else if (link == LinkState::CONNECTING) {
+        if (this->acl_up_.load()) {
+          this->rejected_connects_++;
+        } else {
+          this->failed_connects_++;
+        }
+      }
+      this->reset_media_state_();
+      if (link != LinkState::IDLE) {
+        // Not after a connect that failed right away: connect_() already scheduled its quick retry
+        this->last_attempt_ms_ = millis();
+      }
+      this->link_state_ = LinkState::IDLE;
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 // Controller side: the speaker is the AVRCP target for absolute volume
 void A2DPSourceSpeaker::handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param) {
   switch (event) {
@@ -1063,36 +1384,7 @@ void A2DPSourceSpeaker::handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_
         break;
       }
       ESP_LOGI(TAG, "Speaker button 0x%x", key);
-      switch (key) {
-        case ESP_AVRC_PT_CMD_PLAY:
-        case ESP_AVRC_PT_CMD_PAUSE:
-          // The A2DP stream runs all the time (keep alive), so the speaker cannot know whether music plays and its
-          // play/pause choice is unreliable: let the automation toggle
-          this->pending_command_ = RemoteCommand::PLAY_PAUSE;
-          break;
-        case ESP_AVRC_PT_CMD_STOP:
-          this->pending_command_ = RemoteCommand::STOP;
-          break;
-        case ESP_AVRC_PT_CMD_FORWARD:
-          this->pending_command_ = RemoteCommand::NEXT;
-          break;
-        case ESP_AVRC_PT_CMD_BACKWARD:
-          this->pending_command_ = RemoteCommand::PREVIOUS;
-          break;
-        case ESP_AVRC_PT_CMD_VOL_UP:
-        case ESP_AVRC_PT_CMD_VOL_DOWN: {
-          // Speakers without absolute volume send volume buttons as commands: step our (digital) volume
-          const int current = this->volume_percent_.load();
-          const int next = key == ESP_AVRC_PT_CMD_VOL_UP ? std::min(current + AVRC_VOLUME_STEP, 100)
-                                                         : std::max(current - AVRC_VOLUME_STEP, 0);
-          this->volume_percent_ = static_cast<uint8_t>(next);
-          this->apply_volume_setting_();
-          this->pending_volume_ = next;
-          break;
-        }
-        default:
-          break;
-      }
+      this->handle_speaker_button_(key);
       break;
     }
     case ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT:
@@ -1107,261 +1399,34 @@ void A2DPSourceSpeaker::handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_
   }
 }
 
-int32_t A2DPSourceSpeaker::data_callback(uint8_t *data, int32_t len) {
-  if (instance_ == nullptr || data == nullptr || len <= 0) {
-    return 0;
-  }
-  instance_->last_pull_ms_ = millis();
-  const int64_t start = esp_timer_get_time();
-  const int32_t result = instance_->fill_audio_(data, len);
-  const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time() - start);
-  instance_->cb_calls_++;
-  instance_->cb_time_us_ += elapsed;
-  uint32_t max = instance_->cb_max_us_.load();
-  while (elapsed > max && !instance_->cb_max_us_.compare_exchange_weak(max, elapsed)) {
-  }
-  return result;
-}
-
-int32_t A2DPSourceSpeaker::fill_audio_(uint8_t *data, int32_t len) {
-  size_t bytes_read = 0;
-  if (this->streaming_.load() && !this->pause_state_.load()) {
-    const size_t wanted = len - (len % BYTES_PER_FRAME);
-    bytes_read = this->ring_buffer_->read(data, wanted, 0);
-    bytes_read -= bytes_read % BYTES_PER_FRAME;
-
-    // The stack pulls audio in irregular bursts, so the callback time jitters by tens of milliseconds. It paces the
-    // pulls with the ESP's own clock, so the frames handed over are the playback clock: report timestamps from that
-    // steady clock and only re-anchor after a real discontinuity (stream start, stall). Sendspin hard-syncs at 5 ms
-    // error, so any continuous correction towards the jittery pull time would show up as drift. A constant offset
-    // between pull time and actual playback is the sink's latency, which Sendspin's static delay compensates.
-    const int64_t now = esp_timer_get_time();
-    const int64_t model_now = this->clock_anchor_us_ + this->clock_frames_ * 1000000LL / SAMPLE_RATE;
-    const int64_t error = now - model_now;
-    if (!this->clock_valid_ || error > CLOCK_RESYNC_US || error < -CLOCK_RESYNC_US) {
-      if (this->clock_valid_) {
-        this->clock_resyncs_++;
-      }
-      this->clock_anchor_us_ = now;
-      this->clock_frames_ = 0;
-      this->clock_valid_ = true;
-    }
-    this->pulled_frames_ += len / BYTES_PER_FRAME;
-    this->clock_frames_ += len / BYTES_PER_FRAME;
-
-    if (bytes_read > 0) {
-      this->apply_software_volume_(data, bytes_read);
-      // Time when the last frame of this block leaves the ESP; the sink's own latency is compensated with
-      // Sendspin's static delay
-      const int64_t timestamp = this->clock_anchor_us_ + (this->clock_frames_ - (len - bytes_read) / BYTES_PER_FRAME) *
-                                                             1000000LL / SAMPLE_RATE;
-      // Reporting runs the listeners (Sendspin takes a mutex there), which must not block the Bluetooth task: hand
-      // the progress to report_task() instead
-      portENTER_CRITICAL(&this->report_lock_);
-      this->report_frames_ += bytes_read / BYTES_PER_FRAME;
-      this->report_timestamp_ = timestamp;
-      portEXIT_CRITICAL(&this->report_lock_);
-    }
-    if (bytes_read < static_cast<size_t>(len)) {
-      this->underrun_bytes_ += len - bytes_read;
-    }
-  } else {
-    this->clock_valid_ = false;
-  }
-
-  // Always hand the stack a full buffer; silence fills any gap
-  if (bytes_read < static_cast<size_t>(len)) {
-    if (this->test_tone_ && !this->streaming_.load()) {
-      // Diagnostic: a steady tone instead of idle silence makes dropouts on the Bluetooth link audible without any
-      // WiFi streaming going on
-      int16_t *samples = reinterpret_cast<int16_t *>(data + bytes_read);
-      const size_t frames = (len - bytes_read) / BYTES_PER_FRAME;
-      for (size_t i = 0; i < frames; i++) {
-        samples[2 * i] = samples[2 * i + 1] = TEST_TONE[this->test_tone_phase_];
-        this->test_tone_phase_ = (this->test_tone_phase_ + 1) % TEST_TONE_PERIOD;
-      }
-    } else {
-      memset(data + bytes_read, 0, len - bytes_read);
-    }
-  }
-  return len;
-}
-
-void A2DPSourceSpeaker::handle_gap_event_(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
-  switch (event) {
-    case ESP_BT_GAP_DISC_RES_EVT: {
-      char name[ESP_BT_GAP_MAX_BDNAME_LEN + 1] = {0};
-      uint32_t cod = 0;
-      for (int i = 0; i < param->disc_res.num_prop; i++) {
-        esp_bt_gap_dev_prop_t *prop = &param->disc_res.prop[i];
-        if (prop->type == ESP_BT_GAP_DEV_PROP_COD) {
-          cod = *static_cast<uint32_t *>(prop->val);
-        } else if (prop->type == ESP_BT_GAP_DEV_PROP_BDNAME && name[0] == '\0') {
-          const size_t n = std::min<size_t>(prop->len, ESP_BT_GAP_MAX_BDNAME_LEN);
-          memcpy(name, prop->val, n);
-        } else if (prop->type == ESP_BT_GAP_DEV_PROP_EIR && name[0] == '\0') {
-          uint8_t n = 0;
-          uint8_t *eir = static_cast<uint8_t *>(prop->val);
-          uint8_t *eir_name = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &n);
-          if (eir_name == nullptr) {
-            eir_name = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME, &n);
-          }
-          if (eir_name != nullptr) {
-            memcpy(name, eir_name, std::min<size_t>(n, ESP_BT_GAP_MAX_BDNAME_LEN));
-          }
-        }
-      }
-      char addr[18];
-      format_bda(param->disc_res.bda, addr);
-      ESP_LOGI(TAG, "Found device %s '%s'", addr, name);
-
-      if (this->scan_only_.load()) {
-        // Offer audio devices only (speakers, headphones), not phones or computers nearby
-        if (esp_bt_gap_get_cod_major_dev(cod) != ESP_BT_COD_MAJOR_DEV_AV) {
-          break;
-        }
-        std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-        auto it = std::find_if(this->scan_devices_.begin(), this->scan_devices_.end(), [&](const FoundDevice &d) {
-          return memcmp(d.address, param->disc_res.bda, ESP_BD_ADDR_LEN) == 0;
-        });
-        if (it != this->scan_devices_.end()) {
-          if (it->name.empty()) {
-            it->name = name;
-          }
-        } else if (this->scan_devices_.size() < MAX_FOUND_DEVICES) {
-          FoundDevice device;
-          memcpy(device.address, param->disc_res.bda, ESP_BD_ADDR_LEN);
-          device.name = name;
-          this->scan_devices_.push_back(std::move(device));
-        }
-        break;
-      }
-
-      if (!this->device_found_.load() && name[0] != '\0' && this->device_name_ == name) {
-        memcpy(this->remote_address_, param->disc_res.bda, ESP_BD_ADDR_LEN);
-        this->device_found_ = true;
-        ESP_LOGI(TAG, "Found '%s' at %s; set 'address: %s' to skip discovery", name, addr, addr);
-        esp_bt_gap_cancel_discovery();
-      }
+void A2DPSourceSpeaker::handle_speaker_button_(uint8_t key) {
+  switch (key) {
+    case ESP_AVRC_PT_CMD_PLAY:
+    case ESP_AVRC_PT_CMD_PAUSE:
+      // The A2DP stream runs all the time (keep alive), so the speaker cannot know whether music plays and its
+      // play/pause choice is unreliable: let the automation toggle
+      this->pending_command_ = RemoteCommand::PLAY_PAUSE;
+      break;
+    case ESP_AVRC_PT_CMD_STOP:
+      this->pending_command_ = RemoteCommand::STOP;
+      break;
+    case ESP_AVRC_PT_CMD_FORWARD:
+      this->pending_command_ = RemoteCommand::NEXT;
+      break;
+    case ESP_AVRC_PT_CMD_BACKWARD:
+      this->pending_command_ = RemoteCommand::PREVIOUS;
+      break;
+    case ESP_AVRC_PT_CMD_VOL_UP:
+    case ESP_AVRC_PT_CMD_VOL_DOWN: {
+      // Speakers without absolute volume send volume buttons as commands: step our (digital) volume
+      const int current = this->volume_percent_.load();
+      const int next = key == ESP_AVRC_PT_CMD_VOL_UP ? std::min(current + AVRC_VOLUME_STEP, 100)
+                                                     : std::max(current - AVRC_VOLUME_STEP, 0);
+      this->volume_percent_ = static_cast<uint8_t>(next);
+      this->apply_volume_setting_();
+      this->pending_volume_ = next;
       break;
     }
-    case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
-      if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
-        this->discovery_stopped_ = true;
-      }
-      break;
-    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
-      // Tells a speaker that is off (no link) apart from one that answers but refuses A2DP
-      if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
-          memcmp(param->acl_conn_cmpl_stat.bda, this->remote_address_, ESP_BD_ADDR_LEN) == 0) {
-        this->acl_up_ = true;
-      }
-      break;
-    case ESP_BT_GAP_AUTH_CMPL_EVT:
-      if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-        ESP_LOGI(TAG, "Paired with '%s'", param->auth_cmpl.device_name);
-      } else {
-        ESP_LOGW(TAG, "Pairing failed (status %d); is the speaker in pairing mode?", param->auth_cmpl.stat);
-      }
-      break;
-    case ESP_BT_GAP_PIN_REQ_EVT: {
-      esp_bt_pin_code_t pin_code;
-      const size_t pin_len = std::min(this->pin_code_.size(), sizeof(pin_code));
-      memcpy(pin_code, this->pin_code_.data(), pin_len);
-      esp_bt_gap_pin_reply(param->pin_req.bda, true, pin_len, pin_code);
-      break;
-    }
-    case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
-      if (param->read_rmt_name.stat == ESP_BT_STATUS_SUCCESS) {
-        std::lock_guard<std::mutex> lock(this->remote_name_mutex_);
-        this->remote_name_ = reinterpret_cast<const char *>(param->read_rmt_name.rmt_name);
-      }
-      break;
-    case ESP_BT_GAP_CFM_REQ_EVT:
-      esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
-      break;
-    default:
-      break;
-  }
-}
-
-void A2DPSourceSpeaker::handle_a2dp_event_(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
-  switch (event) {
-    case ESP_A2D_CONNECTION_STATE_EVT: {
-      char addr[18];
-      format_bda(param->conn_stat.remote_bda, addr);
-      switch (param->conn_stat.state) {
-        case ESP_A2D_CONNECTION_STATE_CONNECTED:
-          ESP_LOGI(TAG, "Connected to %s", addr);
-          esp_bt_gap_read_remote_name(param->conn_stat.remote_bda);
-          this->failed_connects_ = 0;
-          this->rejected_connects_ = 0;
-          this->quick_reconnects_ = 0;
-          memcpy(this->connected_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
-          if (memcmp(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN) == 0) {
-            this->address_chosen_ = false;
-          } else if (!this->address_configured_ && !this->address_chosen_.load()) {
-            // The sink connected on its own (e.g. after power on); remember it for outgoing reconnects
-            memcpy(this->remote_address_, param->conn_stat.remote_bda, ESP_BD_ADDR_LEN);
-            this->address_dirty_ = true;
-          }
-          this->media_state_ = MediaState::SUSPENDED;
-          this->media_ctrl_pending_ = false;
-          this->link_state_ = LinkState::CONNECTED;
-          break;
-        case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
-          ESP_LOGW(TAG, "Disconnected from %s", addr);
-          if (this->link_state_.load() == LinkState::CONNECTED) {
-            this->quick_reconnects_ = QUICK_RECONNECTS;
-          }
-          if (this->link_state_.load() == LinkState::CONNECTING) {
-            if (this->acl_up_.load()) {
-              this->rejected_connects_++;
-            } else {
-              this->failed_connects_++;
-            }
-          }
-          this->media_state_ = MediaState::SUSPENDED;
-          this->media_ctrl_pending_ = false;
-          if (this->link_state_.load() != LinkState::IDLE) {
-            // Not after a connect that failed right away: connect_() already scheduled its quick retry
-            this->last_attempt_ms_ = millis();
-          }
-          this->link_state_ = LinkState::IDLE;
-          break;
-        default:
-          break;
-      }
-      break;
-    }
-    case ESP_A2D_AUDIO_STATE_EVT:
-      // No ESP_COEX_BT_ST_A2DP_STREAMING hint: it gives Bluetooth priority over WiFi, and the resulting WiFi latency
-      // ruins Sendspin's clock sync
-      if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
-        ESP_LOGD(TAG, "Media stream started");
-        this->last_pull_ms_ = millis();  // Grace period for the first pull
-        this->stream_started_ms_ = this->last_pull_ms_.load();
-        this->media_state_ = MediaState::STARTED;
-      } else {
-        ESP_LOGD(TAG, "Media stream suspended");
-        this->media_state_ = MediaState::SUSPENDED;
-      }
-      break;
-    case ESP_A2D_MEDIA_CTRL_ACK_EVT:
-      this->media_ctrl_pending_ = false;
-      if (param->media_ctrl_stat.status != ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
-        ESP_LOGW(TAG, "Media control %d rejected (status %d)", param->media_ctrl_stat.cmd,
-                 param->media_ctrl_stat.status);
-        this->media_state_ =
-            param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_START ? MediaState::SUSPENDED : MediaState::STARTED;
-      }
-      break;
-    case ESP_A2D_REPORT_SNK_DELAY_VALUE_EVT:
-      // Delay reports are in 1/10 ms
-      ESP_LOGI(TAG, "Speaker reports a delay of %u.%u ms; use it as Sendspin static delay",
-               param->a2d_report_delay_value_stat.delay_value / 10,
-               param->a2d_report_delay_value_stat.delay_value % 10);
-      break;
     default:
       break;
   }

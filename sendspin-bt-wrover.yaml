@@ -62,9 +62,10 @@ psram:
   speed: 40MHz
 
 logger:
-  # DEBUG is compiled in, but only INFO is active after boot: every log line costs CPU, and the web interface
-  # streams it to each open page. Enable DEBUG explicitly with "Log level" (back to INFO after 10 min or a reboot).
-  level: DEBUG
+  # VERBOSE is compiled in (e.g. for the PN7160's failed activations), but only INFO is active after boot: every log
+  # line costs CPU, and the web interface streams it to each open page. Enable DEBUG or VERBOSE explicitly with
+  # "Log level" (back to INFO after 10 min or a reboot).
+  level: VERBOSE
   initial_level: INFO
 
 api:

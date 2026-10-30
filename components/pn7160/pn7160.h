@@ -20,6 +20,10 @@ static constexpr uint16_t NFCC_TAG_WRITE_TIMEOUT = 15;
 static constexpr uint8_t NFCC_MAX_COMM_FAILS = 3;
 static constexpr uint8_t NFCC_MAX_ERROR_COUNT = 10;
 static constexpr uint8_t NFCC_MAX_SKIPPED_MESSAGES = 8;
+/// time for the NFCC to wake up from standby after a NACKed I2C write (ms)
+static constexpr uint32_t NFCC_WAKEUP_DELAY = 1;
+/// time to wait before resetting the NFCC again after too many initialization failures (ms)
+static constexpr uint32_t NFCC_INIT_RETRY_DELAY = 10000;
 /// time to wait for an activation after a failed one before restarting discovery (ms)
 static constexpr uint32_t NFCC_ACTIVATION_RETRY_TIMEOUT = 500;
 
@@ -313,6 +317,8 @@ class PN7160 : public nfc::Nfcc, public Component {
 
   std::vector<DiscoveredEndpoint> discovered_endpoint_;
 
+  /// when initialization failed too often; the NFCC is reset again NFCC_INIT_RETRY_DELAY later
+  optional<uint32_t> init_retry_at_;
   /// deactivation notification received while waiting for a command's response
   nfc::NciMessage pending_deactivate_ntf_;
   bool deactivate_ntf_pending_{false};

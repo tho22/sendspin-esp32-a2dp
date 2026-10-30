@@ -429,7 +429,12 @@ uint8_t PN7160::start_discovery_() {
   nfc::NciMessage rx;
   nfc::NciMessage tx(nfc::NCI_PKT_MT_CTRL_COMMAND, nfc::RF_GID, nfc::RF_DISCOVER_OID, discover_config);
 
-  if (this->transceive_(tx, rx) != nfc::STATUS_OK) {
+  const uint8_t status = this->transceive_(tx, rx);
+  // A deactivation notification received while waiting for this response (e.g. of a tag activated just as discovery
+  // was stopped) is older than the discovery started here. Processing it later started discovery a second time; by
+  // then the NFCC had activated the tag again, and as that notification was skipped, both sides waited for each other
+  this->deactivate_ntf_pending_ = false;
+  if (status != nfc::STATUS_OK) {
     switch (rx.get_simple_status_response()) {
       // in any of these cases, we are either already in or will remain in discovery, which satisfies the function call
       case nfc::STATUS_OK:
@@ -646,6 +651,12 @@ void PN7160::erase_tag_(const uint8_t tag_index) {
 void PN7160::nci_fsm_transition_() {
   switch (this->nci_state_) {
     case NCIState::NFCC_RESET:
+      if (this->init_retry_at_.has_value()) {
+        if (millis() - this->init_retry_at_.value() < NFCC_INIT_RETRY_DELAY) {
+          return;
+        }
+        this->init_retry_at_.reset();
+      }
       if (this->reset_core_(true, true) != nfc::STATUS_OK) {
         ESP_LOGE(TAG, "Failed to reset NCI core");
         this->nci_fsm_set_error_state_(NCIState::NFCC_RESET);
@@ -771,9 +782,12 @@ bool PN7160::nci_fsm_set_error_state_(NCIState new_state) {
   if (this->error_count_++ > NFCC_MAX_ERROR_COUNT) {
     if ((this->nci_state_error_ == NCIState::NFCC_RESET) || (this->nci_state_error_ == NCIState::NFCC_INIT) ||
         (this->nci_state_error_ == NCIState::NFCC_CONFIG)) {
-      ESP_LOGE(TAG, "Too many initialization failures -- check device connections");
-      this->mark_failed();
-      this->nci_fsm_set_state_(NCIState::FAILED);
+      // The NFCC sometimes stops answering on I2C for several seconds and its first responses after that are
+      // garbled. Giving up for good left the reader dead until the ESP rebooted; reset it again after a pause instead
+      ESP_LOGE(TAG, "Too many initialization failures -- check device connections; retrying in %" PRIu32 " s",
+               NFCC_INIT_RETRY_DELAY / 1000);
+      this->nci_fsm_set_state_(NCIState::NFCC_RESET);
+      this->init_retry_at_ = millis();
     } else {
       ESP_LOGW(TAG, "Too many errors transitioning to state %u; resetting NFCC", (uint8_t) this->nci_state_error_);
       this->nci_fsm_set_state_(NCIState::NFCC_RESET);
@@ -1174,10 +1188,18 @@ uint8_t PN7160::transceive_(nfc::NciMessage &tx, nfc::NciMessage &rx, const uint
                             const bool expect_notification) {
   char buf[nfc::FORMAT_BYTES_BUFFER_SIZE];
 
-  // first, send the message we need to send
-  if (this->write_nfcc(tx) != nfc::STATUS_OK) {
-    ESP_LOGE(TAG, "Error sending message");
-    return nfc::STATUS_FAILED;
+  // first, send the message we need to send. The NFCC NACKs a write now and then (presumably the first one in standby,
+  // which only wakes it up); the write is not received, so it is simply repeated
+  for (uint8_t attempt = 1;; attempt++) {
+    if (this->write_nfcc(tx) == nfc::STATUS_OK) {
+      break;
+    }
+    if (attempt >= NFCC_MAX_COMM_FAILS) {
+      ESP_LOGE(TAG, "Error sending message");
+      return nfc::STATUS_FAILED;
+    }
+    ESP_LOGV(TAG, "Write not acknowledged (attempt %u)", attempt);
+    delay(NFCC_WAKEUP_DELAY);
   }
   ESP_LOGVV(TAG, "Wrote: %s", nfc::format_bytes_to(buf, tx.get_message()));
   // next, the NFCC should send back a response. A late response is waited for, not requested again: resending the

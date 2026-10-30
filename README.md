@@ -92,16 +92,22 @@ antenna of the kit.
 - **Failed activation during discovery**: the NFCC usually activates the tag on one of its next attempts, so discovery
   is only restarted if no activation follows within 500 ms. Stopping it right away raced with the activation: the tag
   dropped out while it lay on the reader, and an activation arriving during the stop could hang the reader
+- **Stale deactivation dropped when discovery starts**: a deactivation notification arriving while discovery is being
+  restarted belongs to the discovery before. Processing it later started discovery a second time; the NFCC had
+  activated the tag by then, that notification was skipped, and both sides waited for each other (silent for hours)
+- **Rejected I2C writes are repeated**: the NFCC NACKs a write now and then (presumably the first one in standby)
+- **No permanent failure**: after too many initialization failures the NFCC is reset again 10 s later instead of
+  the component being marked failed until the next reboot. The NFCC sometimes stops answering on I2C for several
+  seconds and garbles its first responses after that
 
 Known issues with the tested module:
 
-- Most activations fail (~87 % with both tags tested, also with 4.7 V instead of 5.0 V TX voltage), so a tag lying
-  still can stay unseen for seconds; `tag_ttl: 5s` keeps that from being reported as a new scan. Placing a tag again
-  within 5 s is not reported either
-- Twice the PN7160 stopped responding reliably after a while (no responses, discovery not starting); resets via VEN
-  and an ESP reboot did not help, only powering it off (unplugging USB). Suspected cause: the supply (5V pin of the
-  dev board behind its diode) during RF transmission. Not verified yet; next steps: 100 µF + 100 nF at the module,
-  measure VCC, separate 5 V supply
+- A tag that stays on the reader after it was read is rarely activated again: the NFCC reports a failed activation
+  (`DISCOVERY_TARGET_ACTIVATION_FAILED`, visible with VERBOSE logging) about 1–4 times a second for as long as the
+  tag lies there. Enough activations get through to keep it present with `tag_ttl: 5s`; a tag placed again is read
+  at once. Placing a tag again within 5 s is not reported
+- Not caused by the supply: a separate 5.0 V lab supply (30 mA drawn) and 4.7 V instead of 5.0 V TX voltage made no
+  difference; the module does not get warm
 
 ## Native variant (`native/`)
 

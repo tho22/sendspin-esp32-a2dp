@@ -74,8 +74,8 @@ Wiring (tested with the Elechouse PN7160 MINI V1, I2C):
 | SCL | GPIO22 | 400 kHz |
 | IRQ | GPIO34 | input only, driven by the PN7160 |
 | VEN | GPIO25 | |
-| VCC | 5V | 3.3–5.5 V; I/O stays at 3.3 V |
-| GND | GND | not CMD next to 5V: without a common ground I2C fails with random NACKs and garbage |
+| VCC | separate 5 V supply | 3.3–5.5 V; I/O stays at 3.3 V. The dev board's 5V pin is not enough (see below) |
+| GND | GND | also the GND of a separate supply. Not CMD next to 5V: without a common ground I2C fails with random NACKs and garbage |
 
 The small antenna has a short range: the tag has to lie on it. Test_1 (an NTAG215) was only detected with the larger
 antenna of the kit.
@@ -100,14 +100,19 @@ antenna of the kit.
   the component being marked failed until the next reboot. The NFCC sometimes stops answering on I2C for several
   seconds and garbles its first responses after that
 
+Supply: the module needs a stable 5 V. The 5V pin of the dev board (behind its diode) delivered only 4.59 V, and
+with it a tag lying still was reported as removed and read again every 5–10 s, with 200–500 failed activations a
+minute and bursts of I2C errors (NFCC reset automatically). On a separate 5.0 V supply (common GND, ~30 mA drawn) a
+tag lay on the reader for over 4.5 hours without a single false removal, error or NFCC reset, with ~7 failed
+activations a minute. A 100 µF + 100 nF capacitor at the module might be enough with the 5V pin (not tested yet).
+The module does not get warm.
+
 Known issues with the tested module:
 
 - A tag that stays on the reader after it was read is rarely activated again: the NFCC reports a failed activation
-  (`DISCOVERY_TARGET_ACTIVATION_FAILED`, visible with VERBOSE logging) about 1–4 times a second for as long as the
-  tag lies there. Enough activations get through to keep it present with `tag_ttl: 5s`; a tag placed again is read
-  at once. Placing a tag again within 5 s is not reported
-- Not caused by the supply: a separate 5.0 V lab supply (30 mA drawn) and 4.7 V instead of 5.0 V TX voltage made no
-  difference; the module does not get warm
+  (`DISCOVERY_TARGET_ACTIVATION_FAILED`, visible with VERBOSE logging) for as long as the tag lies there. Enough
+  activations get through to keep it present with `tag_ttl: 5s`; a tag placed again is read at once. Placing a tag
+  again within 5 s is not reported
 
 ## Native variant (`native/`)
 

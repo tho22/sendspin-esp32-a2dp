@@ -26,6 +26,10 @@ static constexpr uint32_t NFCC_WAKEUP_DELAY = 1;
 static constexpr uint32_t NFCC_INIT_RETRY_DELAY = 10000;
 /// time to wait for an activation after a failed one before restarting discovery (ms)
 static constexpr uint32_t NFCC_ACTIVATION_RETRY_TIMEOUT = 500;
+/// time a tag activation, selection or deactivation may take before the reader restarts discovery (ms)
+static constexpr uint32_t NFCC_TRANSIENT_STATE_TIMEOUT = 3000;
+/// time without any event in discovery after which discovery is restarted to check that the NFCC still answers (ms)
+static constexpr uint32_t NFCC_DISCOVERY_CHECK_INTERVAL = 60000;
 
 static constexpr uint8_t XCHG_DATA_OID = 0x10;
 static constexpr uint8_t MF_SECTORSEL_OID = 0x32;
@@ -247,6 +251,7 @@ class PN7160 : public nfc::Nfcc, public Component {
 
   /// advance controller state as required
   void nci_fsm_transition_();
+  void check_stalled_state_();
   /// set new controller state
   void nci_fsm_set_state_(NCIState new_state);
   /// setting controller to this state caused an error; returns true if too many errors/failures

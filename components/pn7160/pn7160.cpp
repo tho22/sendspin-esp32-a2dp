@@ -44,7 +44,45 @@ void PN7160::dump_config() {
 
 void PN7160::loop() {
   this->nci_fsm_transition_();
+  this->check_stalled_state_();
   this->purge_old_tags_();
+}
+
+void PN7160::check_stalled_state_() {
+  // The reader waits for notifications from the NFCC in these states. If one gets lost (e.g. the response to a
+  // deactivation could not be read), host and NFCC wait for each other and no tag is seen until the ESP reboots
+  const uint32_t unchanged_for = millis() - this->last_nci_state_change_;
+  switch (this->nci_state_) {
+    case NCIState::RFST_W4_HOST_SELECT:
+    case NCIState::RFST_POLL_ACTIVE:
+    case NCIState::EP_SELECTING:
+    case NCIState::EP_DEACTIVATING:
+      if (unchanged_for < NFCC_TRANSIENT_STATE_TIMEOUT) {
+        return;
+      }
+      ESP_LOGW(TAG, "No progress in state %u for %" PRIu32 " ms; restarting discovery", (uint8_t) this->nci_state_,
+               unchanged_for);
+      break;
+
+    case NCIState::RFST_DISCOVERY:
+      // Without a tag nothing happens in discovery; restart it now and then to find out whether the NFCC still answers
+      if (unchanged_for < NFCC_DISCOVERY_CHECK_INTERVAL) {
+        return;
+      }
+      ESP_LOGV(TAG, "No event in discovery for %" PRIu32 " s; restarting it", unchanged_for / 1000);
+      break;
+
+    default:
+      return;
+  }
+
+  this->deactivate_ntf_pending_ = false;
+  if (this->stop_discovery_() != nfc::STATUS_OK) {
+    ESP_LOGW(TAG, "NFCC did not answer the request to stop discovery; resetting it");
+    this->nci_fsm_set_state_(NCIState::NFCC_RESET);
+    return;
+  }
+  this->nci_fsm_set_state_(NCIState::RFST_IDLE);
 }
 
 void PN7160::set_tag_emulation_message(std::shared_ptr<nfc::NdefMessage> message) {

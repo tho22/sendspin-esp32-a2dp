@@ -99,6 +99,10 @@ antenna of the kit.
 - **No permanent failure**: after too many initialization failures the NFCC is reset again 10 s later instead of
   the component being marked failed until the next reboot. The NFCC sometimes stops answering on I2C for several
   seconds and garbles its first responses after that
+- **Watchdog for lost notifications**: the reader went silent again (no NCI traffic at all, tag on the reader) after a
+  response could not be read. If a tag selection, activation or deactivation makes no progress for 3 s, discovery is
+  restarted with a warning naming the state; discovery without any event is restarted every 60 s to check that the
+  NFCC still answers. If it does not answer the stop request, it is reset
 
 Supply: the module needs a stable 5 V. The 5V pin of the dev board (behind its diode) delivered only 4.59 V, and
 with it a tag lying still was reported as removed and read again every 5–10 s, with 200–500 failed activations a

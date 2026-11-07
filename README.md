@@ -74,11 +74,12 @@ Wiring (tested with the Elechouse PN7160 MINI V1, I2C):
 | SCL | GPIO22 | 400 kHz |
 | IRQ | GPIO34 | input only, driven by the PN7160 |
 | VEN | GPIO25 | |
-| VCC | separate 5 V supply | 3.3–5.5 V; I/O stays at 3.3 V. The dev board's 5V pin is not enough (see below) |
+| VCC | separate 5 V supply | 3.3–5.5 V; I/O stays at 3.3 V. Whether the dev board's 5V pin is enough is open (see below) |
 | GND | GND | also the GND of a separate supply. Not CMD next to 5V: without a common ground I2C fails with random NACKs and garbage |
 
 The small antenna has a short range: the tag has to lie on it. Test_1 (an NTAG215) was only detected with the larger
-antenna of the kit.
+antenna of the kit. With the larger antenna a tag must not lie too close: at 1 cm almost every activation failed (see
+below), at 3–4 cm it is read reliably.
 
 `components/pn7160/` and `components/pn7160_i2c/` are copies of ESPHome's components (2026.9.1) with these changes:
 
@@ -104,12 +105,13 @@ antenna of the kit.
   restarted with a warning naming the state; discovery without any event is restarted every 60 s to check that the
   NFCC still answers. If it does not answer the stop request, it is reset
 
-Supply: the module needs a stable 5 V. The 5V pin of the dev board (behind its diode) delivered only 4.59 V, and
-with it a tag lying still was reported as removed and read again every 5–10 s, with 200–500 failed activations a
-minute and bursts of I2C errors (NFCC reset automatically). On a separate 5.0 V supply (common GND, ~30 mA drawn) a
-tag lay on the reader for over 4.5 hours without a single false removal, error or NFCC reset, with ~7 failed
-activations a minute. A 100 µF + 100 nF capacitor at the module might be enough with the 5V pin (not tested yet).
-The module does not get warm.
+Distance and supply: a tag lying still 1 cm above the larger antenna was reported as removed and read again every few
+seconds, with ~210 failed activations a minute, bursts of I2C errors and NFCC resets. The same tag 4 cm above the
+middle of the antenna: 4 failed activations a minute, no false removal, no error. Too close, the tag presumably detunes the
+antenna. Earlier this was blamed on the supply (4.59 V at the dev board's 5V pin, flapping gone on a separate 5.0 V
+supply), but the distance was not controlled then; with the separate supply (4.93 V at the module, 2–3 × 10 µF,
+100 nF and 100 µF at the module) the flapping came back at 1 cm. Whether the 5V pin is enough at a suitable distance
+has not been tested again. The module draws ~30 mA and does not get warm.
 
 Known issues with the tested module:
 

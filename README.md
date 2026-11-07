@@ -79,7 +79,8 @@ Wiring (tested with the Elechouse PN7160 MINI V1, I2C):
 
 The small antenna has a short range: the tag has to lie on it. Test_1 (an NTAG215) was only detected with the larger
 antenna of the kit. With the larger antenna a tag must not lie too close: at 1 cm almost every activation failed (see
-below), at 3–4 cm it is read reliably.
+below), at 3–4 cm it is read reliably. The small antenna read the HA tag (NTAG) 1 cm above it without a single failed
+activation, false removal or error, also for an hour with music playing.
 
 `components/pn7160/` and `components/pn7160_i2c/` are copies of ESPHome's components (2026.9.1) with these changes:
 
@@ -106,12 +107,12 @@ below), at 3–4 cm it is read reliably.
   NFCC still answers. If it does not answer the stop request, it is reset
 
 Distance and supply: a tag lying still 1 cm above the larger antenna was reported as removed and read again every few
-seconds, with ~210 failed activations a minute, bursts of I2C errors and NFCC resets. The same tag 4 cm above the
-middle of the antenna: 4 failed activations a minute, no false removal, no error. Too close, the tag presumably detunes the
-antenna. Earlier this was blamed on the supply (4.59 V at the dev board's 5V pin, flapping gone on a separate 5.0 V
-supply), but the distance was not controlled then; with the separate supply (4.93 V at the module, 2–3 × 10 µF,
-100 nF and 100 µF at the module) the flapping came back at 1 cm. Whether the 5V pin is enough at a suitable distance
-has not been tested again. The module draws ~30 mA and does not get warm.
+seconds, with ~210 failed activations a minute, bursts of I2C errors and NFCC resets. The same tag 4 cm above the middle
+of the antenna: 4 failed activations a minute, no false removal, no error. With the small antenna 1 cm above it: none.
+Too close, the tag presumably detunes the larger antenna. Earlier this was blamed on the supply (4.59 V at the dev
+board's 5V pin, flapping gone on a separate 5.0 V supply), but the distance was not controlled then; with the separate
+supply (4.93 V at the module, 2–3 × 10 µF, 100 nF and 100 µF at the module) the flapping came back at 1 cm. Whether the
+5V pin is enough at a suitable distance has not been tested again. The module draws ~30 mA and does not get warm.
 
 Known issues with the tested module:
 

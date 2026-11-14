@@ -8,6 +8,7 @@
 #include <cstring>
 #include <string>
 
+#include <esp_app_desc.h>
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
@@ -15,6 +16,8 @@
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/ringbuf.h>
+
+#include "device_info.h"
 
 static const char *const TAG = "web_ui";
 
@@ -56,7 +59,12 @@ pre{background:var(--box);padding:8px;max-height:320px;overflow:auto;font-size:.
 <h1>)html" CONFIG_APP_FRIENDLY_NAME R"html(</h1>
 
 <h2>Now playing</h2>
-<div class="box"><b id="title">-</b><br><span id="artist"></span><br><span class="muted" id="album"></span></div>
+<div class="box"><b id="title">-</b><br><span id="artist"></span><br><span class="muted" id="album"></span>
+<div id="progress" hidden><input type="range" id="bar" min="0" max="1000" step="1" value="0"
+ oninput="seeking=true;showProgress()"
+ onchange="seeking=false;if(prog&&prog.duration){post('seek?ms='+Math.round(this.value/1000*prog.duration));
+ prog.ms=this.value/1000*prog.duration;prog.at=Date.now();}">
+<span class="muted" id="position"></span></div></div>
 <button onclick="post('command?name=previous')">&#9198; Previous</button>
 <button onclick="post('command?name=play_pause')" id="pp">Play/Pause</button>
 <button onclick="post('command?name=next')">&#9197; Next</button>
@@ -74,7 +82,9 @@ pre{background:var(--box);padding:8px;max-height:320px;overflow:auto;font-size:.
 <ul id="devices"></ul>
 
 <h2>Diagnostics</h2>
-<div class="box">WiFi signal: <span id="rssi"></span> dBm &middot; Free internal RAM: <span id="heap"></span> B</div>
+<div class="box">WiFi signal: <span id="rssi"></span> dBm &middot; Free internal RAM: <span id="heap"></span> B
+&middot; Free PSRAM: <span id="psram"></span> KB &middot; Uptime: <span id="uptime"></span><br>
+<span class="muted" id="info"></span></div>
 <div>Log level <select id="level" onchange="post('log_level?level='+this.value)">
 <option value="1">ERROR</option><option value="2">WARN</option><option value="3">INFO</option>
 <option value="4">DEBUG</option></select>
@@ -84,7 +94,26 @@ pre{background:var(--box);padding:8px;max-height:320px;overflow:auto;font-size:.
 
 <script>
 let dragging=false;
+let prog=null;  // Last reported position: {ms, duration, speed, at, seekable}
+let seeking=false;  // The position slider is being dragged
 const $=id=>document.getElementById(id);
+function fmt(ms){
+  const t=Math.floor(ms/1000),h=Math.floor(t/3600),m=Math.floor(t/60)%60,s=String(t%60).padStart(2,'0');
+  return h?h+':'+String(m).padStart(2,'0')+':'+s:m+':'+s;
+}
+// Counts the position on between the status polls
+function showProgress(){
+  if(!prog||(!prog.ms&&!prog.duration)){$('progress').hidden=true;return;}
+  let ms=prog.ms+(Date.now()-prog.at)*prog.speed/1000;
+  if(prog.duration)ms=Math.min(ms,prog.duration);
+  const bar=$('bar');
+  $('progress').hidden=false;
+  bar.hidden=!prog.duration;
+  bar.disabled=!prog.seekable;
+  if(seeking&&prog.duration)ms=bar.value/1000*prog.duration;  // Show where the drag would seek to
+  else bar.value=prog.duration?Math.round(ms/prog.duration*1000):0;
+  $('position').textContent=fmt(ms)+(prog.duration?' / '+fmt(prog.duration):'');
+}
 function post(action){fetch('/api/'+action,{method:'POST'}).then(update);}
 function update(){
   fetch('/api/status').then(r=>r.json()).then(s=>{
@@ -93,10 +122,14 @@ function update(){
     $('title').textContent=s.title||'-';
     $('artist').textContent=s.artist;
     $('album').textContent=s.album;
+    prog={ms:s.progress_ms,duration:s.duration_ms,speed:s.speed,seekable:s.seekable,at:Date.now()};
+    showProgress();
     $('pp').innerHTML=s.playing?'&#9208; Pause':'&#9654; Play';
     if(!dragging){$('volume').value=s.volume;$('volval').textContent=s.volume+' %';}
     $('rssi').textContent=s.rssi;
     $('heap').textContent=s.heap;
+    $('psram').textContent=Math.round(s.psram/1024);
+    $('uptime').textContent=s.uptime;
     if(document.activeElement!==$('level'))$('level').value=s.log_level;
     const list=$('devices');
     list.innerHTML='';
@@ -119,7 +152,11 @@ function pollLog(){
     if(atEnd)box.scrollTop=box.scrollHeight;
   }).catch(()=>{});
 }
-update();setInterval(update,2000);setInterval(pollLog,1000);
+fetch('/api/info').then(r=>r.json()).then(i=>{
+  $('info').textContent=i.chip+' \u00b7 '+i.memory+' \u00b7 Firmware '+i.firmware+' \u00b7 ESP-IDF '+i.idf+
+    ' \u00b7 Last start: '+i.reset_reason;
+}).catch(()=>{});
+update();setInterval(update,2000);setInterval(showProgress,500);setInterval(pollLog,1000);
 </script></body></html>)html";
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -188,6 +225,24 @@ static esp_err_t index_handler(httpd_req_t *req) {
   return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+// Facts that do not change while running; the page fetches them once
+static esp_err_t info_handler(httpd_req_t *req) {
+  const esp_app_desc_t *app = esp_app_get_description();
+  std::string json = "{\"chip\":";
+  append_json_string(json, device_info::chip());
+  json += ",\"memory\":";
+  append_json_string(json, device_info::memory());
+  json += ",\"firmware\":";
+  append_json_string(json, std::string(app->version) + " (" + app->date + " " + app->time + ")");
+  json += ",\"idf\":";
+  append_json_string(json, app->idf_ver);
+  json += ",\"reset_reason\":";
+  append_json_string(json, device_info::reset_reason());
+  json += '}';
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, json.c_str(), json.size());
+}
+
 static esp_err_t status_handler(httpd_req_t *req) {
   const WebUiPlayer::State state = g_player->get_state();
   wifi_ap_record_t ap{};
@@ -212,10 +267,14 @@ static esp_err_t status_handler(httpd_req_t *req) {
   append_json_string(json, state.artist);
   json += ",\"album\":";
   append_json_string(json, state.album);
-  char buf[128];
-  snprintf(buf, sizeof(buf), ",\"volume\":%u,\"playing\":%s,\"rssi\":%d,\"heap\":%u,\"log_level\":%d}",
-           static_cast<unsigned>(state.volume), state.playing ? "true" : "false", rssi,
-           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)), static_cast<int>(g_log_level));
+  json += ",\"uptime\":";
+  append_json_string(json, device_info::uptime(esp_timer_get_time() / 1000000));
+  char buf[224];
+  snprintf(buf, sizeof(buf), ",\"progress_ms\":%u,\"duration_ms\":%u,\"speed\":%u,\"seekable\":%s,\"volume\":%u,\"playing\":%s,\"rssi\":%d,\"heap\":%u,\"psram\":%u,\"log_level\":%d}",
+           static_cast<unsigned>(state.progress_ms), static_cast<unsigned>(state.duration_ms),
+           static_cast<unsigned>(state.speed), state.seekable ? "true" : "false", static_cast<unsigned>(state.volume), state.playing ? "true" : "false", rssi,
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(device_info::free_psram()), static_cast<int>(g_log_level));
   json += buf;
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_send(req, json.c_str(), json.size());
@@ -257,6 +316,11 @@ static esp_err_t action_handler(httpd_req_t *req) {
       return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "value missing");
     }
     g_player->request_volume(static_cast<uint8_t>(std::clamp(atoi(value), 0, 100)));
+  } else if (strcmp(action, "seek") == 0) {
+    if (!query_value(req, "ms", value, sizeof(value))) {
+      return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ms missing");
+    }
+    g_player->request_seek(static_cast<uint32_t>(std::max(atol(value), 0L)));
   } else if (strcmp(action, "command") == 0) {
     if (!query_value(req, "name", value, sizeof(value))) {
       return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "name missing");
@@ -294,7 +358,7 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
   config.server_port = 80;
   // Default control port: Sendspin's own httpd moves to the next one to make room for a web server
   config.max_open_sockets = 3;
-  config.max_uri_handlers = 12;
+  config.max_uri_handlers = 14;
   config.lru_purge_enable = true;
   // Off the Bluetooth core
   config.core_id = 1;
@@ -306,6 +370,7 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
   static const httpd_uri_t URIS[] = {
       {"/", HTTP_GET, index_handler, nullptr},
       {"/api/status", HTTP_GET, status_handler, nullptr},
+      {"/api/info", HTTP_GET, info_handler, nullptr},
       {"/api/log", HTTP_GET, log_handler, nullptr},
       {"/api/scan", HTTP_POST, action_handler, const_cast<char *>("scan")},
       {"/api/unpair", HTTP_POST, action_handler, const_cast<char *>("unpair")},
@@ -313,6 +378,7 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
       {"/api/pair", HTTP_POST, action_handler, const_cast<char *>("pair")},
       {"/api/volume", HTTP_POST, action_handler, const_cast<char *>("volume")},
       {"/api/command", HTTP_POST, action_handler, const_cast<char *>("command")},
+      {"/api/seek", HTTP_POST, action_handler, const_cast<char *>("seek")},
       {"/api/log_level", HTTP_POST, action_handler, const_cast<char *>("log_level")},
   };
   for (const auto &uri : URIS) {

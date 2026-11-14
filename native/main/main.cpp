@@ -1,5 +1,6 @@
 // Sendspin player that streams to a Bluetooth A2DP speaker. Plain ESP-IDF, no ESPHome.
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -97,6 +98,7 @@ class SendspinBridge : public sendspin::SendspinClientListener,
                        public sendspin::SendspinPersistenceProvider,
                        public sendspin::PlayerRoleListener,
                        public sendspin::MetadataRoleListener,
+                       public sendspin::ControllerRoleListener,
                        public WebUiPlayer {
  public:
   bool begin() {
@@ -156,6 +158,7 @@ class SendspinBridge : public sendspin::SendspinClientListener,
 
     // Controller role: forwards the speaker's play/pause/next/previous buttons to the server
     this->controller_ = &this->client_->add_controller();
+    this->controller_->set_listener(this);  // Whether the server offers seeking
     // Metadata role: title, artist and album for the web interface
     this->metadata_ = &this->client_->add_metadata();
     this->metadata_->set_listener(this);
@@ -183,6 +186,18 @@ class SendspinBridge : public sendspin::SendspinClientListener,
       state.title = this->title_;
       state.artist = this->artist_;
       state.album = this->album_;
+      state.duration_ms = this->duration_ms_;
+      state.speed = this->speed_;
+      state.seekable = this->seekable_;
+      // Interpolate the position from the last server update (the server only reports it on changes)
+      int64_t progress = this->progress_ms_;
+      if (this->progress_anchor_us_ != 0) {
+        progress += (esp_timer_get_time() - this->progress_anchor_us_) * this->speed_ / 1000000;
+      }
+      if (this->duration_ms_ > 0) {
+        progress = std::min<int64_t>(progress, this->duration_ms_);
+      }
+      state.progress_ms = static_cast<uint32_t>(std::max<int64_t>(progress, 0));
     }
     state.volume = this->volume_.load();
     state.playing = this->stream_active_.load();
@@ -190,6 +205,7 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   }
   void request_volume(uint8_t volume) override { this->web_volume_ = volume; }
   void request_command(Command command) override { this->web_command_ = command; }
+  void request_seek(uint32_t position_ms) override { this->web_seek_ms_ = position_ms; }
 
  protected:
   // --- SendspinClientListener (client loop thread) ---
@@ -226,12 +242,39 @@ class SendspinBridge : public sendspin::SendspinClientListener,
     if (metadata.album.has_value()) {
       this->album_ = *metadata.album;
     }
+    if (metadata.progress.has_value()) {
+      // The position is valid at the server timestamp of the update; anchor it in local time here, where the
+      // client's clock conversion may be used (client loop thread)
+      this->progress_ms_ = metadata.progress->track_progress;
+      this->duration_ms_ = metadata.progress->track_duration;
+      this->speed_ = metadata.progress->playback_speed;
+      const int64_t anchor = this->client_->get_client_time(metadata.timestamp);
+      this->progress_anchor_us_ = anchor != 0 ? anchor : esp_timer_get_time();
+    }
   }
+  // --- ControllerRoleListener (client loop thread) ---
+  void on_controller_state(const sendspin::ServerStateControllerObject &state) override {
+    const auto &commands = state.supported_commands;
+    std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+    this->seekable_ = std::find(commands.begin(), commands.end(), sendspin::SendspinControllerCommand::SEEK) !=
+                      commands.end();
+    this->seek_max_ms_ = state.seek_max_ms.value_or(0);
+  }
+  void on_controller_state_clear() override {
+    std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+    this->seekable_ = false;
+    this->seek_max_ms_ = 0;
+  }
+
   void on_metadata_clear() override {
     std::lock_guard<std::mutex> lock(this->metadata_mutex_);
     this->title_.clear();
     this->artist_.clear();
     this->album_.clear();
+    this->progress_ms_ = 0;
+    this->duration_ms_ = 0;
+    this->speed_ = 0;
+    this->progress_anchor_us_ = 0;
   }
 
   // --- SendspinNetworkProvider ---
@@ -304,6 +347,28 @@ class SendspinBridge : public sendspin::SendspinClientListener,
     if (web_volume >= 0) {
       ESP_LOGI(TAG, "Volume set to %d%% in the web interface", web_volume);
       this->set_volume_(static_cast<uint8_t>(web_volume));
+    }
+
+    const int64_t web_seek = this->web_seek_ms_.exchange(-1);
+    if (web_seek >= 0) {
+      uint32_t position = static_cast<uint32_t>(web_seek);
+      bool seekable;
+      {
+        std::lock_guard<std::mutex> lock(this->metadata_mutex_);
+        seekable = this->seekable_;
+        if (this->seek_max_ms_ > 0) {
+          position = std::min(position, this->seek_max_ms_);
+        }
+      }
+      if (seekable) {
+        ESP_LOGI(TAG, "Seeking to %u ms (web interface)", static_cast<unsigned>(position));
+        sendspin::ClientCommandControllerObject obj{};
+        obj.command = sendspin::SendspinControllerCommand::SEEK;
+        obj.position_ms = position;
+        this->controller_->send_command(obj);
+      } else {
+        ESP_LOGW(TAG, "The server does not offer seeking for this track");
+      }
     }
 
     using Cmd = sendspin::SendspinControllerCommand;
@@ -396,10 +461,17 @@ class SendspinBridge : public sendspin::SendspinClientListener,
   // Web interface: requests (web server task -> client loop) and track info (client loop -> web server task)
   std::atomic<int> web_volume_{-1};
   std::atomic<Command> web_command_{Command::NONE};
+  std::atomic<int64_t> web_seek_ms_{-1};
   std::mutex metadata_mutex_;
   std::string title_;
   std::string artist_;
   std::string album_;
+  uint32_t progress_ms_{0};        // Position at progress_anchor_us_
+  uint32_t duration_ms_{0};
+  uint32_t speed_{0};              // Playback speed * 1000
+  int64_t progress_anchor_us_{0};  // Local time the position refers to (0: none)
+  bool seekable_{false};           // From the controller state
+  uint32_t seek_max_ms_{0};        // 0: unknown
 };
 
 extern "C" void app_main() {

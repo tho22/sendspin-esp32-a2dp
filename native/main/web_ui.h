@@ -15,6 +15,10 @@ class WebUiPlayer {
     std::string title;
     std::string artist;
     std::string album;
+    uint32_t progress_ms{0};  ///< Playback position, interpolated to now
+    uint32_t duration_ms{0};  ///< Track length; 0 if unknown or a live stream
+    uint32_t speed{0};        ///< Playback speed * 1000 (1000 = normal, 0 = paused)
+    bool seekable{false};     ///< The server offers seeking within the current track
     uint8_t volume{0};
     bool playing{false};
   };
@@ -23,6 +27,7 @@ class WebUiPlayer {
   virtual State get_state() = 0;
   virtual void request_volume(uint8_t volume) = 0;
   virtual void request_command(Command command) = 0;
+  virtual void request_seek(uint32_t position_ms) = 0;
 };
 
 /// Web interface on port 80, the counterpart of the ESPHome variant's web interface: Bluetooth status and pairing

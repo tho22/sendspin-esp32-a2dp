@@ -12,6 +12,19 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
+  # Hardware facts shared with the native variant (chip, memory, reset reason, time formatting)
+  includes:
+    - native/main/device_info.h
+    # Seeking within the track (the "Position" slider)
+    - include/sendspin_seek.h
+  on_boot:
+    then:
+      - lambda: sendspin_seek::track(id(sendspin_hub));
+      - component.update: chip_info
+      - component.update: memory_info
+      - component.update: reset_info
+      # No track yet: show the position slider as unknown instead of 0
+      - component.update: track_seek
 
 esp32:
   board: esp-wrover-kit
@@ -203,6 +216,29 @@ sensor:
     unit_of_measurement: B
     update_interval: 30s
     lambda: return heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  - platform: template
+    name: Free PSRAM
+    entity_category: diagnostic
+    unit_of_measurement: B
+    update_interval: 30s
+    lambda: return device_info::free_psram();
+  # Track position and length from Music Assistant (internal: shown as "Track time" and the "Position" slider). The server only reports the
+  # position on changes; the sensor interpolates it. Every 5 s keeps Home Assistant's recorder and the radio quiet.
+  - platform: sendspin
+    type: track_progress
+    id: track_progress
+    internal: true
+    update_interval: 5s
+    on_value:
+      - component.update: track_time
+      - component.update: track_seek
+  - platform: sendspin
+    type: track_duration
+    id: track_duration
+    internal: true
+    on_value:
+      - component.update: track_time
+      - component.update: track_seek
   # WiFi and Bluetooth share one radio: a weak signal means more retransmissions and less airtime for both
   - platform: wifi_signal
     name: WiFi signal
@@ -215,6 +251,11 @@ web_server:
   version: 3
   # Reloads the page after "Search speakers", so the found speakers show up under "Speaker"
   js_include: web/pairing.js
+  # Track info, position and controls as one block at the top
+  sorting_groups:
+    - id: group_now_playing
+      name: Now playing
+      sorting_weight: 1
 
 text_sensor:
   # Tag on the NFC reader: the HA tag ID (tags written by the Companion app) or the UID, as sent to Home Assistant
@@ -232,12 +273,72 @@ text_sensor:
   - platform: sendspin
     type: title
     name: Title
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 1
   - platform: sendspin
     type: artist
     name: Artist
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 2
   - platform: sendspin
     type: album
     name: Album
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 3
+  # "1:23 / 3:45"; only the position for live streams (no length)
+  - platform: template
+    id: track_time
+    name: Track time
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 4
+    icon: mdi:timer-music-outline
+    update_interval: never
+    lambda: |-
+      const float progress = id(track_progress).state;
+      const float duration = id(track_duration).state;
+      const bool has_progress = !std::isnan(progress);
+      const bool has_duration = !std::isnan(duration) && duration > 0;
+      if (!has_progress && !has_duration) {
+        return {""};
+      }
+      std::string text = device_info::track_time(has_progress ? static_cast<uint32_t>(progress) : 0);
+      if (has_duration) {
+        text += " / " + device_info::track_time(static_cast<uint32_t>(duration));
+      }
+      return text;
+  # Device facts (diagnostics)
+  - platform: version
+    name: Firmware
+    hide_timestamp: false
+  - platform: uptime
+    name: Uptime
+    entity_category: diagnostic
+    update_interval: 60s
+  - platform: template
+    id: chip_info
+    name: Chip
+    icon: mdi:chip
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return device_info::chip();
+  - platform: template
+    id: memory_info
+    name: Memory
+    icon: mdi:memory
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return device_info::memory();
+  - platform: template
+    id: reset_info
+    name: Last start
+    icon: mdi:restart
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {device_info::reset_reason()};
 
 script:
   # Play/pause as a Sendspin command: media_player.toggle does nothing while no stream is active (e.g. after
@@ -261,16 +362,25 @@ script:
 button:
   - platform: template
     name: Play Pause
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 7
     icon: mdi:play-pause
     on_press:
       - script.execute: play_pause
   - platform: template
     name: Next track
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 8
     icon: mdi:skip-next
     on_press:
       - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::NEXT);
   - platform: template
     name: Previous track
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 6
     icon: mdi:skip-previous
     on_press:
       - lambda: id(sendspin_hub).send_client_command(sendspin::SendspinControllerCommand::PREVIOUS);
@@ -314,8 +424,41 @@ select:
     name: Speaker
 
 number:
+  # Position in the track as a slider, in % of the length (a number's range is fixed, the track length is not; the
+  # time is shown by "Track time"); moving it seeks if Music Assistant offers seeking for the track
+  - platform: template
+    id: track_seek
+    name: Position
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 5
+    icon: mdi:timer-music-outline
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: slider
+    update_interval: never
+    lambda: |-
+      const float progress = id(track_progress).state;
+      const float duration = id(track_duration).state;
+      if (std::isnan(progress) || std::isnan(duration) || duration <= 0) {
+        return NAN;
+      }
+      return std::round(std::min(progress / duration, 1.0f) * 100.0f);
+    set_action:
+      - lambda: |-
+          const float duration = id(track_duration).state;
+          if (std::isnan(duration) || duration <= 0) {
+            ESP_LOGW("seek", "Track length unknown, cannot seek");
+            return;
+          }
+          sendspin_seek::seek(id(sendspin_hub), static_cast<uint32_t>(x / 100.0f * duration));
   - platform: template
     name: Volume
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 9
     icon: mdi:volume-high
     min_value: 0
     max_value: 100

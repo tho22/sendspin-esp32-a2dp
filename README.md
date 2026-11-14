@@ -44,8 +44,15 @@ brings a new IDF version.
 `http://sendspin-bt-1.local` shows:
 
 - **Bluetooth status**: connected/disconnected, name and address of the speaker
-- **WiFi signal** (diagnostic)
+- **WiFi signal**, **free internal RAM**, **free PSRAM**, **uptime**, **firmware** version, **chip** (model, revision,
+  cores, clock), **memory** (flash, PSRAM and how much of it the ESP32 can use), **last start** (reset reason)
+  (diagnostic)
 - **Title, artist, album** of the current track (Sendspin metadata role)
+- **Track time** ("1:23 / 3:45", updated every 5 s; only the position for live streams) and a **Position** slider
+  (% of the track); moving it seeks, if Music Assistant offers seeking for the track. ESPHome's Sendspin hub cannot
+  send a seek position, so `include/sendspin_seek.h` reaches its controller role directly. The web page groups
+  title, artist, album, track time, position, the transport buttons and the volume as **Now playing** at the top
+  (Home Assistant sorts by entity type and cannot group them)
 - **Volume** slider and **Play/Pause**, **Next track**, **Previous track** buttons
 - **Search speakers**: searches about 13 s for audio devices ready to pair (put the speaker into pairing mode
   first) and lists them under **Speaker**. A connected speaker is disconnected for the search and reconnected
@@ -126,9 +133,11 @@ Known issues with the tested module:
 - `main/a2dp_output.*`: A2DP source (connection, playback clock, keep alive, statistics, AVRCP)
 - `main/main.cpp`: WiFi, mDNS (`_sendspin._tcp`), NVS, Sendspin client with player and controller roles
 - `main/web_ui.*`: web interface on port 80 (`http://sendspin-bt-1.local`), the counterpart of the ESPHome one:
-  title/artist/album, play/pause, next, previous, volume, Bluetooth status, **Search speakers** (the list of found
-  speakers updates itself), **Pair** a found speaker, **Unpair speaker**, **Re-pair speaker** (by name), WiFi
-  signal, free internal RAM, log level (INFO after boot and 10 min after choosing DEBUG; DEBUG only for the
+  title/artist/album, position slider with "m:ss / m:ss" (counted on in the page between the polls; dragging it
+  seeks), play/pause, next, previous, volume, Bluetooth status, **Search speakers** (the list of found speakers
+  updates itself), **Pair** a found speaker, **Unpair speaker**, **Re-pair speaker** (by name), WiFi signal, free
+  internal RAM and PSRAM, uptime, chip, memory, firmware and ESP-IDF version, reset reason (`main/device_info.h`,
+  shared with the ESPHome variant), log level (INFO after boot and 10 min after choosing DEBUG; DEBUG only for the
   application's own tags) and the log
   (only captured while "Show log" is on)
 - `sdkconfig.defaults`: complete configuration with rationale, `main/Kconfig.projbuild`: options

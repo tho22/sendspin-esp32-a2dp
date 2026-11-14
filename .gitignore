@@ -12,3 +12,8 @@ native/sdkconfig.test
 *.log
 testruns/
 __pycache__/
+bridge/build/
+bridge/sdkconfig
+bridge/sdkconfig.old
+bridge/sdkconfig.test
+bridge/dependencies.lock

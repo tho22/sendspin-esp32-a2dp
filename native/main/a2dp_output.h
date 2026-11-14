@@ -58,6 +58,12 @@ class A2dpOutput {
   void poll_remote(RemoteCommand &command, int &volume_percent);
 
   bool is_connected() const { return this->link_state_.load() == LinkState::CONNECTED; }
+  /// The media stream runs, i.e. the stack pulls audio from the ring buffer
+  bool is_stream_started() const {
+    return this->is_connected() && this->media_state_.load() == MediaState::STARTED;
+  }
+  /// Audio waiting in the ring buffer (bytes), for callers that keep the latency constant themselves
+  size_t get_buffered_bytes() const { return this->ring_buffer_size_ - xRingbufferGetCurFreeSize(this->ring_buffer_); }
 
   // Pairing from the web interface. The requests are thread-safe; the control task carries them out.
   /// Searches for speakers ready to pair (disconnects the current one for the search)

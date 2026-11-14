@@ -705,6 +705,10 @@ void A2dpOutput::log_task_load_() {
 
   auto *tasks = static_cast<TaskStatus_t *>(heap_caps_malloc(MAX_TASKS * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM));
   if (tasks == nullptr) {
+    // Boards without PSRAM (e.g. the Bluetooth bridge on an ESP32-WROOM)
+    tasks = static_cast<TaskStatus_t *>(heap_caps_malloc(MAX_TASKS * sizeof(TaskStatus_t), MALLOC_CAP_DEFAULT));
+  }
+  if (tasks == nullptr) {
     return;
   }
   configRUN_TIME_COUNTER_TYPE total = 0;

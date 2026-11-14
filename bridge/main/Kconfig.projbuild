@@ -1,0 +1,52 @@
+menu "Sendspin Bluetooth bridge"
+
+    config BRIDGE_BT_NAME
+        string "Bluetooth name of the bridge"
+        default "Sendspin BT 1"
+
+    config BRIDGE_BT_DEVICE_NAME
+        string "Bluetooth speaker to search for when none is paired yet"
+        default "SRS-XB100"
+
+    config BRIDGE_INITIAL_VOLUME
+        int "Volume until the WiFi side sends one (%)"
+        range 0 100
+        default 10
+
+    config BRIDGE_BUFFER_MS
+        int "Ring buffer between I2S and Bluetooth (ms)"
+        default 250
+
+    config BRIDGE_TARGET_FILL_MS
+        int "Fill level the ring buffer is held at (ms); this is the bridge's fixed latency"
+        default 100
+
+    config BRIDGE_I2S_BCLK_GPIO
+        int "I2S BCLK (output, the bridge is the I2S master)"
+        default 26
+
+    config BRIDGE_I2S_WS_GPIO
+        int "I2S WS/LRCLK (output)"
+        default 25
+
+    config BRIDGE_I2S_DIN_GPIO
+        int "I2S data in (from the WiFi side)"
+        default 27
+
+    config BRIDGE_UART_TX_GPIO
+        int "Link UART TX (to the WiFi side's RX)"
+        default 22
+
+    config BRIDGE_UART_RX_GPIO
+        int "Link UART RX (from the WiFi side's TX)"
+        default 21
+
+    config BRIDGE_UART_BAUD
+        int "Link UART baud rate"
+        default 115200
+
+    config BRIDGE_TEST_TONE
+        bool "Diagnostic: send a 441 Hz tone instead of the I2S input"
+        default n
+
+endmenu

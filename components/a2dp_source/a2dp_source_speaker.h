@@ -91,6 +91,11 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   /// Volume (0..1) changed on the speaker
   Trigger<float> *get_volume_trigger() { return &this->volume_trigger_; }
 
+  /// Volume lock (child lock): the speaker's own volume controls are reverted to the volume set by the player
+  /// (Home Assistant, Music Assistant, web interface); on_volume no longer fires
+  void set_volume_lock(bool locked);
+  bool is_volume_locked() const { return this->volume_lock_.load(); }
+
  protected:
   // Bluedroid callbacks, called from the BTC task
   static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
@@ -206,6 +211,8 @@ class A2DPSourceSpeaker : public speaker::Speaker, public Component {
   uint32_t tg_connected_ms_{0};
   std::atomic<RemoteCommand> pending_command_{RemoteCommand::NONE};
   std::atomic<int> pending_volume_{-1};
+  std::atomic<bool> volume_lock_{false};
+  std::atomic<bool> volume_reset_pending_{false};  // Locked: set our volume on the speaker again (main loop)
   Trigger<> play_pause_trigger_;
   Trigger<> stop_trigger_;
   Trigger<> next_trigger_;

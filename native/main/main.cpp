@@ -107,6 +107,8 @@ class SendspinBridge : public sendspin::SendspinClientListener,
     if (nvs_get("volume", saved_volume) && saved_volume <= 100) {
       this->volume_ = static_cast<uint8_t>(saved_volume);
     }
+    uint32_t volume_lock;
+    const bool locked = nvs_get("volume_lock", volume_lock) && volume_lock != 0;
 
     A2dpOutput::Config out_cfg;
     out_cfg.local_name = CONFIG_APP_FRIENDLY_NAME;
@@ -114,6 +116,7 @@ class SendspinBridge : public sendspin::SendspinClientListener,
 #ifdef CONFIG_APP_TEST_TONE
     out_cfg.test_tone = true;
 #endif
+    this->output_.set_volume_lock(locked);
     if (!this->output_.begin(out_cfg, [this](uint32_t frames, int64_t timestamp) {
           if (this->player_ != nullptr) {
             this->player_->notify_audio_played(frames, timestamp);
@@ -200,10 +203,16 @@ class SendspinBridge : public sendspin::SendspinClientListener,
       state.progress_ms = static_cast<uint32_t>(std::max<int64_t>(progress, 0));
     }
     state.volume = this->volume_.load();
+    state.volume_locked = this->output_.is_volume_locked();
     state.playing = this->stream_active_.load();
     return state;
   }
   void request_volume(uint8_t volume) override { this->web_volume_ = volume; }
+  void request_volume_lock(bool locked) override {
+    // Rare user action: store it right away (the web server task may use NVS)
+    this->output_.set_volume_lock(locked);
+    nvs_set("volume_lock", locked ? 1u : 0u);
+  }
   void request_command(Command command) override { this->web_command_ = command; }
   void request_seek(uint32_t position_ms) override { this->web_seek_ms_ = position_ms; }
 

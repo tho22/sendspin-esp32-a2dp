@@ -52,6 +52,10 @@ class A2dpOutput {
   /// Sets the playback volume. With AVRCP absolute volume the speaker applies it, otherwise it is digital gain.
   void set_volume(uint8_t volume_percent);
   void set_muted(bool muted);
+  /// Volume lock (child lock): the speaker's own volume controls are reverted to the volume set with set_volume()
+  /// and no longer reported by poll_remote()
+  void set_volume_lock(bool locked);
+  bool is_volume_locked() const { return this->volume_lock_.load(); }
 
   /// Fetches a pending button press and/or a volume change made on the speaker (volume < 0: none).
   /// Call from the thread that owns the consumer (e.g. the Sendspin client loop).
@@ -185,6 +189,8 @@ class A2dpOutput {
   uint32_t tg_connected_ms_{0};
   std::atomic<RemoteCommand> pending_command_{RemoteCommand::NONE};
   std::atomic<int> pending_volume_{-1};
+  std::atomic<bool> volume_lock_{false};
+  std::atomic<bool> volume_reset_pending_{false};  // Locked: set our volume on the speaker again (poll_remote)
 
   // Control task state
   bool attempted_once_{false};

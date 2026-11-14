@@ -72,6 +72,8 @@ pre{background:var(--box);padding:8px;max-height:320px;overflow:auto;font-size:.
 <input type="range" id="volume" min="0" max="100" step="1"
  oninput="dragging=true;$('volval').textContent=this.value+' %'"
  onchange="dragging=false;post('volume?value='+this.value)"></div>
+<div><label><input type="checkbox" id="vlock" onchange="post('volume_lock?on='+(this.checked?1:0))"> Volume lock</label>
+<span class="muted">(volume only from Music Assistant and this page; changes on the speaker are reverted)</span></div>
 
 <h2>Bluetooth speaker</h2>
 <div class="box">Status: <b id="status">...</b></div>
@@ -126,6 +128,7 @@ function update(){
     showProgress();
     $('pp').innerHTML=s.playing?'&#9208; Pause':'&#9654; Play';
     if(!dragging){$('volume').value=s.volume;$('volval').textContent=s.volume+' %';}
+    $('vlock').checked=s.volume_locked;
     $('rssi').textContent=s.rssi;
     $('heap').textContent=s.heap;
     $('psram').textContent=Math.round(s.psram/1024);
@@ -270,9 +273,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
   json += ",\"uptime\":";
   append_json_string(json, device_info::uptime(esp_timer_get_time() / 1000000));
   char buf[224];
-  snprintf(buf, sizeof(buf), ",\"progress_ms\":%u,\"duration_ms\":%u,\"speed\":%u,\"seekable\":%s,\"volume\":%u,\"playing\":%s,\"rssi\":%d,\"heap\":%u,\"psram\":%u,\"log_level\":%d}",
+  snprintf(buf, sizeof(buf), ",\"progress_ms\":%u,\"duration_ms\":%u,\"speed\":%u,\"seekable\":%s,\"volume\":%u,\"volume_locked\":%s,\"playing\":%s,\"rssi\":%d,\"heap\":%u,\"psram\":%u,\"log_level\":%d}",
            static_cast<unsigned>(state.progress_ms), static_cast<unsigned>(state.duration_ms),
-           static_cast<unsigned>(state.speed), state.seekable ? "true" : "false", static_cast<unsigned>(state.volume), state.playing ? "true" : "false", rssi,
+           static_cast<unsigned>(state.speed), state.seekable ? "true" : "false", static_cast<unsigned>(state.volume),
+           state.volume_locked ? "true" : "false", state.playing ? "true" : "false", rssi,
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(device_info::free_psram()), static_cast<int>(g_log_level));
   json += buf;
@@ -316,6 +320,11 @@ static esp_err_t action_handler(httpd_req_t *req) {
       return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "value missing");
     }
     g_player->request_volume(static_cast<uint8_t>(std::clamp(atoi(value), 0, 100)));
+  } else if (strcmp(action, "volume_lock") == 0) {
+    if (!query_value(req, "on", value, sizeof(value))) {
+      return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "on missing");
+    }
+    g_player->request_volume_lock(atoi(value) != 0);
   } else if (strcmp(action, "seek") == 0) {
     if (!query_value(req, "ms", value, sizeof(value))) {
       return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ms missing");
@@ -358,7 +367,7 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
   config.server_port = 80;
   // Default control port: Sendspin's own httpd moves to the next one to make room for a web server
   config.max_open_sockets = 3;
-  config.max_uri_handlers = 14;
+  config.max_uri_handlers = 15;
   config.lru_purge_enable = true;
   // Off the Bluetooth core
   config.core_id = 1;
@@ -377,6 +386,7 @@ bool web_ui_start(A2dpOutput *output, WebUiPlayer *player) {
       {"/api/repair", HTTP_POST, action_handler, const_cast<char *>("repair")},
       {"/api/pair", HTTP_POST, action_handler, const_cast<char *>("pair")},
       {"/api/volume", HTTP_POST, action_handler, const_cast<char *>("volume")},
+      {"/api/volume_lock", HTTP_POST, action_handler, const_cast<char *>("volume_lock")},
       {"/api/command", HTTP_POST, action_handler, const_cast<char *>("command")},
       {"/api/seek", HTTP_POST, action_handler, const_cast<char *>("seek")},
       {"/api/log_level", HTTP_POST, action_handler, const_cast<char *>("log_level")},

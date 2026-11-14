@@ -20,12 +20,14 @@ class WebUiPlayer {
     uint32_t speed{0};        ///< Playback speed * 1000 (1000 = normal, 0 = paused)
     bool seekable{false};     ///< The server offers seeking within the current track
     uint8_t volume{0};
+    bool volume_locked{false};
     bool playing{false};
   };
 
   virtual ~WebUiPlayer() = default;
   virtual State get_state() = 0;
   virtual void request_volume(uint8_t volume) = 0;
+  virtual void request_volume_lock(bool locked) = 0;
   virtual void request_command(Command command) = 0;
   virtual void request_seek(uint32_t position_ms) = 0;
 };

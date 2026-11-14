@@ -870,6 +870,12 @@ void A2dpOutput::set_volume(uint8_t volume_percent) {
   this->apply_volume_setting_();
 }
 
+void A2dpOutput::set_volume_lock(bool locked) {
+  if (this->volume_lock_.exchange(locked) != locked) {
+    ESP_LOGI(TAG, "Volume lock %s", locked ? "on: the speaker's volume controls are reverted" : "off");
+  }
+}
+
 void A2dpOutput::set_muted(bool muted) {
   this->muted_ = muted;
   this->apply_volume_setting_();
@@ -896,6 +902,9 @@ void A2dpOutput::apply_volume_setting_() {
 void A2dpOutput::poll_remote(RemoteCommand &command, int &volume_percent) {
   command = this->pending_command_.exchange(RemoteCommand::NONE);
   volume_percent = this->pending_volume_.exchange(-1);
+  if (this->volume_reset_pending_.exchange(false)) {
+    this->apply_volume_setting_();
+  }
 }
 
 void A2dpOutput::apply_volume_(uint8_t *data, size_t length) {
@@ -971,6 +980,10 @@ void A2dpOutput::handle_avrc_ct_event_(esp_avrc_ct_cb_event_t event, esp_avrc_ct
         if (now_ms() - this->ct_connected_ms_ < AVRC_CONNECT_GRACE_MS) {
           // The speaker's own volume when connecting: ours has been applied instead
           ESP_LOGD(TAG, "Ignoring speaker volume right after connecting");
+        } else if (this->volume_lock_.load()) {
+          // Volume lock: keep ours; set it on the speaker again from poll_remote()
+          ESP_LOGI(TAG, "Volume lock: reverting the speaker's volume change (%u%%)", avrc_to_percent(this->peer_volume_));
+          this->volume_reset_pending_ = true;
         } else {
           // Changed on the speaker (buttons): pass it on. No immediate echo from here: with it the JBL GO stayed at
           // its old volume. Speakers that only apply a change once the source sets it (e.g. Sony SRS-XB100) get it
@@ -1037,6 +1050,10 @@ void A2dpOutput::handle_avrc_tg_event_(esp_avrc_tg_cb_event_t event, esp_avrc_tg
         case ESP_AVRC_PT_CMD_VOL_UP:
         case ESP_AVRC_PT_CMD_VOL_DOWN: {
           // Speakers without absolute volume send volume buttons as commands: step our (digital) volume
+          if (this->volume_lock_.load()) {
+            ESP_LOGI(TAG, "Volume lock: ignoring the speaker's volume button");
+            break;
+          }
           const int current = this->volume_percent_.load();
           const int next = key == ESP_AVRC_PT_CMD_VOL_UP ? std::min(current + AVRC_VOLUME_STEP, 100)
                                                          : std::max(current - AVRC_VOLUME_STEP, 0);

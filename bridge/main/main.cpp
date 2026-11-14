@@ -15,6 +15,7 @@
 //   STATUS               sends READY, CONNECTED, SEARCHING, STATUS and DEVICES again
 //   VOL <0-100>          playback volume (AVRCP absolute volume on the speaker if supported, else digital gain)
 //   MUTE <0|1>
+//   LOCK <0|1>           volume lock: the speaker's own volume changes are reverted to VOL and not reported
 //   SCAN                 search for speakers ready to pair; the result follows as DEVICES
 //   PAIR <index>         pair the speaker at <index> of the last DEVICES list
 //   UNPAIR               forget the speaker, no connection attempts until the next pairing
@@ -22,7 +23,7 @@
 //   LOG <NONE|ERROR|WARN|INFO|DEBUG|VERBOSE>   log level of the bridge's USB console
 //
 // Events (bridge -> WiFi side):
-//   READY <version>      after boot; the WiFi side then sends VOL and MUTE
+//   READY <version>      after boot; the WiFi side then sends VOL, MUTE and LOCK
 //   CONNECTED <0|1>      A2DP link to the speaker
 //   SEARCHING <0|1>      a speaker search is running
 //   STATUS <text>        human readable link/pairing state
@@ -258,6 +259,8 @@ static void handle_command(const std::string &line) {
     g_output.set_volume(static_cast<uint8_t>(value));
   } else if (cmd == "MUTE" && parse_int(arg, 0, 1, value)) {
     g_output.set_muted(value != 0);
+  } else if (cmd == "LOCK" && parse_int(arg, 0, 1, value)) {
+    g_output.set_volume_lock(value != 0);
   } else if (cmd == "SCAN" && arg.empty()) {
     g_output.request_scan();
   } else if (cmd == "PAIR" && parse_int(arg, 0, 99, value)) {

@@ -54,6 +54,8 @@ brings a new IDF version.
   title, artist, album, track time, position, the transport buttons and the volume as **Now playing** at the top
   (Home Assistant sorts by entity type and cannot group them)
 - **Volume** slider and **Play/Pause**, **Next track**, **Previous track** buttons
+- **Volume lock** switch (child lock, kept across reboots): only Home Assistant, Music Assistant and the web
+  interface set the volume; changes on the speaker are reverted (see [Speaker controls](#speaker-controls))
 - **Search speakers**: searches about 13 s for audio devices ready to pair (put the speaker into pairing mode
   first) and lists them under **Speaker**. A connected speaker is disconnected for the search and reconnected
   afterwards. The page reloads itself when the search is done (`web/pairing.js`): the web interface reads the
@@ -162,7 +164,7 @@ Known issues with the tested module:
 - `main/main.cpp`: WiFi, mDNS (`_sendspin._tcp`), NVS, Sendspin client with player and controller roles
 - `main/web_ui.*`: web interface on port 80 (`http://sendspin-bt-1.local`), the counterpart of the ESPHome one:
   title/artist/album, position slider with "m:ss / m:ss" (counted on in the page between the polls; dragging it
-  seeks), play/pause, next, previous, volume, Bluetooth status, **Search speakers** (the list of found speakers
+  seeks), play/pause, next, previous, volume, volume lock (stored in NVS), Bluetooth status, **Search speakers** (the list of found speakers
   updates itself), **Pair** a found speaker, **Unpair speaker**, **Re-pair speaker** (by name), WiFi signal, free
   internal RAM and PSRAM, uptime, chip, memory, firmware and ESP-IDF version, reset reason (`main/device_info.h`,
   shared with the ESPHome variant), log level (INFO after boot and 10 min after choosing DEBUG; DEBUG only for the
@@ -188,10 +190,11 @@ HTTP interface (`main/web_ui.cpp`, used by the page itself):
 
 | Path | Method | Purpose |
 |---|---|---|
-| `/api/status` | GET | JSON: Bluetooth `status`, `title`/`artist`/`album`, `playing`, `volume`, `progress_ms`/`duration_ms`/`speed`/`seekable`, `searching`, found `devices`, `rssi`, `heap`, `psram`, `uptime`, `log_level` |
+| `/api/status` | GET | JSON: Bluetooth `status`, `title`/`artist`/`album`, `playing`, `volume`, `volume_locked`, `progress_ms`/`duration_ms`/`speed`/`seekable`, `searching`, found `devices`, `rssi`, `heap`, `psram`, `uptime`, `log_level` |
 | `/api/info` | GET | JSON: `chip`, `memory`, `firmware`, `idf`, `reset_reason` |
 | `/api/log` | GET | New log lines since the last call; the log is only captured while this is polled |
 | `/api/volume?value=0..100` | POST | Volume in % |
+| `/api/volume_lock?on=0\|1` | POST | Volume lock: changes on the speaker are reverted |
 | `/api/command?name=play_pause\|next\|previous` | POST | Transport controls |
 | `/api/seek?ms=<position>` | POST | Seek within the track (if Music Assistant offers it) |
 | `/api/scan` | POST | Search speakers (~13 s) |
@@ -214,6 +217,12 @@ while no stream is active. Play/pause is only acted on if the speaker is still c
 SRS-XB100 sends pause right before it powers off.
 In the ESPHome variant the buttons fire triggers (`on_play_pause`, `on_next`, `on_previous`, `on_stop`,
 `on_volume`) that `sendspin-bt-wrover.yaml` connects to Sendspin commands and the media player volume.
+
+**Volume lock** (child lock; ESPHome: switch "Volume lock", native: checkbox in the web interface, bridge: `LOCK`
+command): while it is on, only Home Assistant, Music Assistant and the web interface set the volume. A volume change
+reported by the speaker (absolute volume) is answered by setting the player's volume on the speaker again, and the
+speaker's +/− buttons (without absolute volume) are ignored. Speakers that change their amplifier locally without
+telling the source cannot be locked.
 
 If the speaker is reachable but refuses the connection (e.g. because it was paired with the other variant in the
 meantime), both variants drop the old pairing after 2 attempts and pair again. After discovering a speaker by

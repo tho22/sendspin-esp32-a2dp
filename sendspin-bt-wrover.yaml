@@ -407,6 +407,23 @@ button:
     on_press:
       - lambda: id(bt_speaker).repair();
 
+switch:
+  # Child lock for the volume: only Home Assistant, Music Assistant and the web interface set the volume; changes
+  # made on the speaker (buttons, absolute volume) are reverted. Kept across reboots.
+  - platform: template
+    name: Volume lock
+    web_server:
+      sorting_group_id: group_now_playing
+      sorting_weight: 10
+    icon: mdi:volume-lock
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: id(bt_speaker).set_volume_lock(true);
+    turn_off_action:
+      - lambda: id(bt_speaker).set_volume_lock(false);
+
 select:
   - platform: logger
     id: log_level

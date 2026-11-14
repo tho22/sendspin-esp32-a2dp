@@ -338,6 +338,25 @@ Streaming every log line over WiFi takes enough airtime from Bluetooth for audib
 the log level back to INFO 10 min after DEBUG was chosen (ESPHome: script on the logger select; native: esp_timer
 in the web interface, with a hint on the page).
 
+## Phase 15: Sendspin buffer 3 MB (2026-11-14)
+
+How far ahead Music Assistant fills Sendspin's encoded buffer, measured on ESPHome (rev3 board, Sony SRS-XB100, FLAC
+~80 KB/s) with a temporary probe in sendspin-cpp's sync task (server-time span between the newest written chunk and
+the chunk being decoded, every 5 s):
+
+| Buffer | Lead while playing | Chunks waiting | Write failures at stream start (buffer full) |
+|---|---|---|---|
+| 1 MB | 7–9 s | ~80 | 142 |
+| 3 MB | 27–29 s, levels off there | ~270 | 0 |
+
+- With 1 MB the lead is limited by bytes; Music Assistant sends ~27 s of audio in one burst at stream start, which
+  overflowed the buffer (every dropped chunk is a 104.5 ms gap).
+- With 3 MB the lead levels off at ~28 s although ~10 % of the advertised capacity stays free, so Music Assistant
+  appears to limit the lead by time; a larger buffer should bring nothing more.
+- Listening: clean. Both variants now use 3 MB (PSRAM); WiFi outages of up to ~25 s are bridged.
+- After each reboot the first ~15–20 s were silent (underruns) with 1 MB as well, i.e. independent of the buffer size;
+  not yet checked for a normal track start.
+
 ## Quirks of the JBL GO
 
 - Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.

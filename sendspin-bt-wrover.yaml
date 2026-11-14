@@ -169,9 +169,10 @@ media_source:
     # A2DP (SBC) runs at a fixed 44.1 kHz -> no Opus (48 kHz only), no resampling needed
     sample_rate: 44100
     codecs: [flac, pcm]
-    # Encoded audio buffer (PSRAM). Music Assistant fills it ahead of time; with 150 KB dense music (FLAC
-    # ~1 Mbit/s) overflowed it: dropped chunks, each a 104.5 ms gap. 1 MB is ESPHome's default.
-    buffer_size: 1000000
+    # Encoded audio buffer (PSRAM). Music Assistant fills it ahead of time (up to ~28 s); every chunk that does
+    # not fit is dropped, a 104.5 ms gap. 1 MB (ESPHome's default) held only 7-9 s and overflowed at each stream
+    # start; 3 MB takes the start burst and bridges WiFi outages of ~25 s.
+    buffer_size: 3000000
     # Internal RAM: PSRAM of ESP32 rev1 is slow (cache workaround)
     decode_memory: internal
     # Compensates the speaker's Bluetooth latency (the XB100 reports 250 ms); adjustable in Music Assistant

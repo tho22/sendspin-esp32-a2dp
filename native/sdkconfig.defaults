@@ -69,9 +69,9 @@ CONFIG_SENDSPIN_ENABLE_METADATA=y
 CONFIG_SENDSPIN_ENABLE_COLOR=n
 CONFIG_SENDSPIN_ENABLE_ARTWORK=n
 CONFIG_SENDSPIN_ENABLE_VISUALIZER=n
-# 1 MB (PSRAM): Music Assistant fills the buffer ahead of time; 150 KB overflowed with dense music (FLAC ~1 Mbit/s),
-# every dropped chunk is a 104.5 ms gap
-CONFIG_APP_SENDSPIN_BUFFER_SIZE=1000000
+# 3 MB (PSRAM): Music Assistant fills the buffer ahead of time (up to ~28 s), every dropped chunk is a 104.5 ms gap.
+# 1 MB held only 7-9 s and overflowed at each stream start; 3 MB takes the start burst and bridges WiFi outages of ~25 s
+CONFIG_APP_SENDSPIN_BUFFER_SIZE=3000000
 
 # Diagnostics: per-task CPU load in the stats log
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y

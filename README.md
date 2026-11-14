@@ -172,7 +172,7 @@ slightly less than real time until the next reboot.
 | WiFi: receive aggregation with BA window 6, no TX AMPDU, buffers 12/40, TCP window 32 KB | Compromise from A/B runs: without aggregation the TCP stream backs up and Sendspin's clock sync breaks (silence only); with long bursts (BA 32, 16/64, 64 KB) WiFi disturbs A2DP (dropouts) |
 | lwIP receive mailboxes 64 (default 6) | otherwise lwIP drops segments and TCP retransmissions inflate the round trip of the sync messages |
 | Out-of-order TCP segments unlimited (ESPHome sets 4) | with 4, a single lost WiFi frame discards most of the 32 KB window; the retransmissions stalled the stream for 5–20 s (ESPHome only, native uses the IDF default) |
-| Sendspin buffer 1 MB in PSRAM | Music Assistant fills it ahead of time; with 150 KB dense music (FLAC ~1 Mbit/s) overflowed it and every dropped chunk was a 104.5 ms gap |
+| Sendspin buffer 3 MB in PSRAM | Music Assistant fills it up to ~28 s ahead; every chunk that does not fit is dropped (a 104.5 ms gap). 1 MB held only 7–9 s and overflowed at every stream start; 3 MB also bridges WiFi outages of ~25 s |
 | `malloc()` above 4 KB may use PSRAM (32 KB internal reserved) | otherwise Sendspin's incoming chunks exhaust the internal RAM (ESPHome: abort in `operator new`) |
 | Modem sleep only outside streaming | Sendspin requests "high performance" WiFi while streaming |
 | No coexistence hint `A2DP_STREAMING` | gives Bluetooth priority and makes WiFi latency much worse |

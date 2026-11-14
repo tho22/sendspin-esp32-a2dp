@@ -22,7 +22,7 @@ menu "Sendspin A2DP Bridge"
 
     config APP_SENDSPIN_BUFFER_SIZE
         int "Sendspin audio buffer (bytes, PSRAM) for encoded audio"
-        default 1000000
+        default 3000000
 
     config APP_STATIC_DELAY_MS
         int "Initial static delay (ms), compensates the speaker latency"

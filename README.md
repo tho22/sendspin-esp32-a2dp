@@ -67,6 +67,34 @@ brings a new IDF version.
   for the statistics and per-task load lines. DEBUG returns to INFO after 10 min: streamed to an open page it takes
   enough WiFi airtime for audible Bluetooth dropouts
 
+### HTTP interface
+
+Besides the page, ESPHome's web server offers a REST interface and an event stream, described at
+<https://esphome.io/web-api/> (the ESPHome logo on the page links there). Entities are addressed by their name
+(spaces as `%20`):
+
+| Path | Method | Purpose |
+|---|---|---|
+| `/events` | GET | Server-sent events: all states at connect, then every change and the log lines (what the page uses) |
+| `/<domain>/<name>` | GET | State of one entity as JSON |
+| `/<domain>/<name>/<action>` | POST | Operate an entity (`curl` needs `-d ""` for the Content-Length) |
+
+- Read: `sensor/` Free PSRAM, Free internal RAM, WiFi signal; `text_sensor/` Title, Artist, Album, Track time,
+  Bluetooth status, Chip, Memory, Firmware, Last start, Uptime, NFC tag; `binary_sensor/Bluetooth connected`
+- Operate: `number/Volume/set?value=40`, `number/Position/set?value=50` (seeks, % of the track),
+  `button/<name>/press` for Play Pause, Next track, Previous track, Search speakers, Unpair speaker,
+  Re-pair speaker, `select/Speaker/set?option=<option>`, `select/Log level/set?option=DEBUG`
+
+```bash
+curl http://sendspin-bt-1.local/text_sensor/Track%20time
+# {"id":"text_sensor/Track time","value":"1:09 / 3:35","state":"1:09 / 3:35"}
+curl -X POST -d "" "http://sendspin-bt-1.local/number/Volume/set?value=40"
+curl -X POST -d "" "http://sendspin-bt-1.local/button/Play%20Pause/press"
+```
+
+The media player itself is not served (this ESPHome version drops the connection on `/media_player/...`); the
+buttons and the volume cover it. Firmware uploads through `/update` are off: OTA only runs over the ESPHome API.
+
 ### NFC reader (optional)
 
 A PN7160 on I2C reports scanned tags to Home Assistant as tag scans (`homeassistant.tag_scanned`). Tags written by
@@ -155,6 +183,26 @@ Getting started:
 View the log: `.venv/bin/python native/serial_log.py /dev/ttyUSB0 600 --reset`
 A/B tests: override values in `native/sdkconfig.test`, then `native/run_test.sh NAME` (builds, flashes, logs for
 13 min and evaluates with `native/analyze_log.py`).
+
+HTTP interface (`main/web_ui.cpp`, used by the page itself):
+
+| Path | Method | Purpose |
+|---|---|---|
+| `/api/status` | GET | JSON: Bluetooth `status`, `title`/`artist`/`album`, `playing`, `volume`, `progress_ms`/`duration_ms`/`speed`/`seekable`, `searching`, found `devices`, `rssi`, `heap`, `psram`, `uptime`, `log_level` |
+| `/api/info` | GET | JSON: `chip`, `memory`, `firmware`, `idf`, `reset_reason` |
+| `/api/log` | GET | New log lines since the last call; the log is only captured while this is polled |
+| `/api/volume?value=0..100` | POST | Volume in % |
+| `/api/command?name=play_pause\|next\|previous` | POST | Transport controls |
+| `/api/seek?ms=<position>` | POST | Seek within the track (if Music Assistant offers it) |
+| `/api/scan` | POST | Search speakers (~13 s) |
+| `/api/pair?index=<n>` | POST | Pair entry `n` of `devices` |
+| `/api/unpair`, `/api/repair` | POST | Unpair the speaker / re-pair it by name |
+| `/api/log_level?level=1..4` | POST | ERROR, WARN, INFO, DEBUG (DEBUG returns to INFO after 10 min) |
+
+```bash
+curl http://sendspin-bt-1.local/api/status
+curl -X POST "http://sendspin-bt-1.local/api/command?name=next"
+```
 
 ## Speaker controls
 

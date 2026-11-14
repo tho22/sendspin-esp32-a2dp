@@ -357,6 +357,17 @@ the chunk being decoded, every 5 s):
 - After each reboot the first ~15–20 s were silent (underruns) with 1 MB as well, i.e. independent of the buffer size;
   not yet checked for a normal track start.
 
+## Phase 16: Volume lock (2026-11-14)
+
+New "Volume lock" (child lock) in all variants (commit 3f37805): while it is on, a volume change reported by the
+speaker (absolute volume) is answered from the main loop by setting the player's volume on the speaker again, and
++/- passthrough buttons (speakers without absolute volume) are ignored; on_volume / the server report do not fire.
+
+- ESPHome on the rev3 board (OTA to .231), Sony SRS-XB100: lock on, volume changed with the speaker's buttons → the
+  speaker jumps back to the player's volume. (Volume from Home Assistant / the web interface while locked: not explicitly checked.)
+- Native and bridge: compiled only, not tested on the device.
+- Not tested: JBL GO (an immediate echo keeps its volume, so it should simply stay put) and the Rapoo A300.
+
 ## Quirks of the JBL GO
 
 - Supports absolute volume, but an immediate echo of its volume notification keeps its volume from changing.
